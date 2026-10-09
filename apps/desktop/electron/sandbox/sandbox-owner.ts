@@ -18,7 +18,6 @@ import {
   sandboxPlatformSupported,
   sbxInstallHint,
   sbxStatus,
-  SANDBOX_NAME_PREFIX,
   stopSandbox,
   type SbxStatus,
 } from "./sandbox-sbx";
@@ -96,10 +95,9 @@ export class SandboxOwner {
     const status = await this.sbxStatus(true);
     const ready = status.state === "ready" ? status.binary : undefined;
     if (ready) await this.pollLog(ready);
+    const owned = this.store.ownedSandboxes();
     const sandboxes = ready
-      ? (await listSandboxes(ready).catch(() => [])).filter((sandbox) =>
-          sandbox.name.startsWith(SANDBOX_NAME_PREFIX),
-        )
+      ? (await listSandboxes(ready).catch(() => [])).filter((sandbox) => owned.has(sandbox.name))
       : [];
     const inUse = new Set([...this.sessions].map((session) => session.sandbox));
     return {
@@ -202,6 +200,9 @@ export class SandboxOwner {
             }
           }
           this.sandboxThreads.set(sandbox, { repoPath, ref: sessionRef });
+          this.store
+            .setOwned(sandbox, true)
+            .catch((error: unknown) => console.error("[sandbox] record sandbox", error));
           this.knownRepos.add(repoPath);
           this.startLogPolling();
         },
@@ -304,8 +305,9 @@ export class SandboxOwner {
   private async stopLeftoverSandboxes(): Promise<void> {
     const status = await this.sbxStatus(true);
     if (status.state !== "ready") return;
+    const owned = this.store.ownedSandboxes();
     for (const sandbox of await listSandboxes(status.binary).catch(() => [])) {
-      if (sandbox.name.startsWith(SANDBOX_NAME_PREFIX) && sandbox.status === "running") {
+      if (owned.has(sandbox.name) && sandbox.status === "running") {
         await stopSandbox(status.binary, sandbox.name).catch(() => undefined);
       }
     }
@@ -315,11 +317,13 @@ export class SandboxOwner {
     const status = await this.sbxStatus(true);
     if (status.state !== "ready") return;
     const inUse = new Set([...this.sessions].map((session) => session.sandbox));
-    for (const sandbox of await listSandboxes(status.binary)) {
-      if (sandbox.name.startsWith(SANDBOX_NAME_PREFIX) && !inUse.has(sandbox.name)) {
-        await removeSandbox(status.binary, sandbox.name);
-        this.sandboxThreads.delete(sandbox.name);
-      }
+    const owned = this.store.ownedSandboxes();
+    const existing = new Set((await listSandboxes(status.binary)).map((sandbox) => sandbox.name));
+    for (const name of [...owned]) {
+      if (inUse.has(name)) continue;
+      if (existing.has(name)) await removeSandbox(status.binary, name);
+      this.sandboxThreads.delete(name);
+      await this.store.setOwned(name, false);
     }
   }
 

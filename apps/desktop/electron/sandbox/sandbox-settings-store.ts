@@ -124,6 +124,18 @@ export function decodeSandboxNetworkLog(value: unknown): LogFile {
   return { version: LOG_VERSION, repos };
 }
 
+function decodeOwnedSandboxes(value: unknown): { version: 1; names: string[] } {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.names)) {
+    fail("sandboxes", "names");
+  }
+  return {
+    version: 1,
+    names: value.names.map((name, index) =>
+      typeof name === "string" && name ? name : fail("sandboxes", `names[${index}]`),
+    ),
+  };
+}
+
 /**
  * Sandbox preferences and the outbound host log. Rules belong to a repository's main checkout, so
  * its worktrees share them. The log keeps host names and counts only, never URLs or contents.
@@ -134,10 +146,13 @@ export class SandboxSettingsStore {
   private logSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly settingsPath: string;
   private readonly logPath: string;
+  private readonly ownedPath: string;
+  private owned = new Set<string>();
 
   constructor(directory: string) {
     this.settingsPath = path.join(directory, "sandbox-settings.json");
     this.logPath = path.join(directory, "network-log.json");
+    this.ownedPath = path.join(directory, "sandboxes.json");
   }
 
   async load(): Promise<void> {
@@ -149,6 +164,27 @@ export class SandboxSettingsStore {
         this.log.set(repoPath, new Map(entries.map((entry) => [entry.host, entry])));
       }
     }
+    const owned = await readJsonWithBackup(this.ownedPath);
+    if (owned.value !== undefined) this.owned = new Set(decodeOwnedSandboxes(owned.value).names);
+  }
+
+  /**
+   * Sandboxes this profile created. sbx is shared by every pi-gui (an installed app and a dev
+   * build, say), so cleanup must only touch these.
+   */
+  ownedSandboxes(): ReadonlySet<string> {
+    return this.owned;
+  }
+
+  async setOwned(name: string, owned: boolean): Promise<void> {
+    if (this.owned.has(name) === owned) return;
+    if (owned) this.owned.add(name);
+    else this.owned.delete(name);
+    await writeFileAtomicQueued(
+      this.ownedPath,
+      `${JSON.stringify({ version: 1, names: [...this.owned].sort() }, null, 2)}\n`,
+      decodeOwnedSandboxes,
+    );
   }
 
   enabled(fallback: boolean): boolean {
