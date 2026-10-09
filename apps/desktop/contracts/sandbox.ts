@@ -1,3 +1,6 @@
+/** Extension status key the sandbox reports under; the composer shows it instead of the dock. */
+export const SANDBOX_STATUS_KEY = "pi-gui-sandbox";
+
 /** Whether a sandboxed thread may reach any host, or only hosts the person allowed. */
 export type SandboxNetworkMode = "allow-all" | "allowlist";
 export type SandboxHostRule = "allow" | "block";

@@ -41,6 +41,7 @@ import { useWorkbenchWidth } from "../features/workbench/use-workbench-width";
 import type { WorkspaceFileLine } from "../features/conversation/workspace-file-line";
 import { buildModelOptions } from "../features/conversation/composer-commands";
 import { getDesktopShortcutLabel } from "../../contracts/ipc";
+import { SANDBOX_STATUS_KEY } from "../../contracts/sandbox";
 import { CommandPaletteSurface } from "../features/command-palette/command-palette-surface";
 import { deriveModelOnboardingState } from "../features/settings/model-onboarding";
 import type { SettingsSection } from "../features/settings/settings-view";
@@ -1213,6 +1214,10 @@ export default function App() {
                     : undefined
                 }
                 extensionFlags={snapshot.extensionFlagsBySession[selectedSessionKey]}
+                sandboxStatus={
+                  selectedExtensionUi?.statuses.find((status) => status.key === SANDBOX_STATUS_KEY)
+                    ?.text
+                }
                 provider={resolvedSessionProvider}
                 modelId={resolvedSessionModelId}
                 thinkingLevel={resolvedSessionThinkingLevel}

@@ -13,11 +13,9 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
-import type { SandboxSessionState } from "../../contracts/sandbox";
+import { SANDBOX_STATUS_KEY, type SandboxSessionState } from "../../contracts/sandbox";
 import type { GondolinVm } from "./sandbox-gondolin";
 import type { SandboxSession, SandboxSessionRef } from "./sandbox-session";
-
-const STATUS_KEY = "sandbox";
 
 export interface SandboxExtensionHost {
   enabled(): boolean;
@@ -45,7 +43,10 @@ export function createSandboxExtension(
   host: SandboxExtensionHost,
 ): ExtensionFactory {
   return (pi: ExtensionAPI) => {
-    if (!host.enabled()) return;
+    if (!host.enabled()) {
+      pi.on("session_start", (_event, ctx) => ctx.ui.setStatus(SANDBOX_STATUS_KEY, "Sandbox: off"));
+      return;
+    }
     const cwd = workspace.path;
     let session: SandboxSession | undefined;
     let context: ExtensionContext | undefined;
@@ -118,9 +119,9 @@ export function createSandboxExtension(
       session = host.openSession(
         { workspaceId: workspace.workspaceId, sessionId: ctx.sessionManager.getSessionId() },
         cwd,
-        (state, message) => context?.ui.setStatus(STATUS_KEY, statusText(state, message)),
+        (state, message) => context?.ui.setStatus(SANDBOX_STATUS_KEY, statusText(state, message)),
       );
-      ctx.ui.setStatus(STATUS_KEY, statusText(session.state, session.message));
+      ctx.ui.setStatus(SANDBOX_STATUS_KEY, statusText(session.state, session.message));
     });
 
     pi.on("session_shutdown", () => {

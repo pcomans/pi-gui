@@ -35,6 +35,7 @@ import { ContextMeter } from "./context-meter";
 import { ModelSelector } from "./model-selector";
 import { ExtensionNotices } from "../extensions/extension-notices";
 import { ExtensionFlagsBadge } from "../threads/extension-flags-selector";
+import { SandboxBadge } from "./sandbox-badge";
 import type { ExtensionDockModel } from "../extensions/extension-session-ui";
 
 interface ComposerPanelProps {
@@ -45,6 +46,8 @@ interface ComposerPanelProps {
   readonly usage?: SessionUsageSnapshot;
   /** Flag values this thread's pi session started with. */
   readonly extensionFlags?: ExtensionFlagValues;
+  /** The tool sandbox's status for this thread, if it reported one. */
+  readonly sandboxStatus?: string;
   readonly activeSlashCommand?: ComposerSlashCommand;
   readonly activeSlashCommandMeta?: string;
   readonly composerDraft: string;
@@ -104,6 +107,7 @@ export function ComposerPanel({
   runtime,
   usage,
   extensionFlags,
+  sandboxStatus,
   activeSlashCommand,
   activeSlashCommandMeta,
   composerDraft,
@@ -227,6 +231,7 @@ export function ComposerPanel({
                     onSetThinking={onSetThinking}
                   />
                   <ExtensionFlagsBadge values={extensionFlags} />
+                  <SandboxBadge status={sandboxStatus} />
                   <ContextMeter usage={usage} />
                 </div>
                 <div className="composer__actions">

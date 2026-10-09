@@ -3447,3 +3447,19 @@ mark.thread-find-active {
   border: 1px solid var(--border-default);
   color: var(--muted-soft);
 }
+
+.sandbox-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sandbox-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sandbox-badge--off,
+.sandbox-badge--failed {
+  color: var(--warning);
+}

@@ -3,6 +3,7 @@ import type { HostUiResponse } from "@pi-gui/session-driver";
 import { trapDialogFocus } from "../../ui/dialog-focus";
 import { focusComposerAfter } from "./focus-composer";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon } from "../../ui/icons";
+import { SANDBOX_STATUS_KEY } from "../../../contracts/sandbox";
 import type {
   SessionExtensionDialogRecord,
   SessionExtensionUiStateRecord,
@@ -29,7 +30,12 @@ export function hasExtensionDockContent(uiState?: SessionExtensionUiStateRecord)
     return false;
   }
 
-  return uiState.statuses.length > 0 || uiState.widgets.length > 0;
+  return dockStatuses(uiState).length > 0 || uiState.widgets.length > 0;
+}
+
+/** The sandbox reports its status too, but the composer shows that one. */
+function dockStatuses(uiState: SessionExtensionUiStateRecord | undefined) {
+  return (uiState?.statuses ?? []).filter((status) => status.key !== SANDBOX_STATUS_KEY);
 }
 
 export function buildExtensionDockModel(
@@ -39,7 +45,7 @@ export function buildExtensionDockModel(
     return undefined;
   }
 
-  const statuses = (uiState?.statuses ?? [])
+  const statuses = dockStatuses(uiState)
     .map((status) => ({
       key: status.key,
       text: sanitizeDockText(status.text),
