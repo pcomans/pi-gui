@@ -61,8 +61,12 @@ let worktree: string;
 let owner: SandboxOwner;
 let pi: ReturnType<typeof fakePi>;
 
-async function run(tool: string, params: Record<string, unknown>): Promise<string> {
-  const result = await pi.tools.get(tool)!.execute("call", params, undefined, undefined, pi.ctx);
+async function run(
+  tool: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const result = await pi.tools.get(tool)!.execute("call", params, signal, undefined, pi.ctx);
   return result.content.map((part) => part.text ?? "").join("");
 }
 
@@ -151,6 +155,68 @@ await test("network rules apply to the running VM and every host is logged", asy
   const repo = (await owner.snapshot()).repos.find((entry) => entry.repoPath === mainRepo);
   assert.equal(repo?.hosts.find((entry) => entry.host === "example.com")?.blockedCount, 1);
   assert.equal(repo?.hosts.find((entry) => entry.host === "example.org")?.allowedCount, 1);
+});
+
+await test("write and edit refuse paths outside the checkout instead of faking success", async () => {
+  await assert.rejects(
+    run("write", { path: join(root, "elsewhere.txt"), content: "x" }),
+    /outside this thread's checkout/,
+  );
+  assert.match(await run("write", { path: "/tmp/scratch.txt", content: "ok" }), /Successfully/);
+});
+
+await test("Stop kills the command inside the VM", async () => {
+  const controller = new AbortController();
+  const running = run("bash", { command: "sleep 300; echo finished" }, controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  controller.abort();
+  await assert.rejects(running);
+  // The bracket keeps grep from matching its own command line.
+  const left = await run("bash", { command: "ps -o args | grep '[s]leep 300' || echo none" });
+  assert.match(left, /none/);
+});
+
+await test("git in one worktree's sandbox cannot prune another worktree", async () => {
+  const other = join(root, "repo-other");
+  git(mainRepo, "worktree", "add", "-q", "-b", "other", other);
+  await pi.emit("session_shutdown");
+  await pi.emit("session_start");
+  await run("bash", { command: "git worktree prune -v 2>&1; git gc --quiet 2>&1; true" });
+  assert.match(git(other, "status", "--short", "--branch"), /## other/);
+});
+
+await test("private addresses are blocked and logged unless allowed", async () => {
+  const output = await run("bash", {
+    command: "curl -sS -m 5 -o /dev/null -w '%{http_code}' http://10.0.2.2/ 2>&1; true",
+  });
+  assert.doesNotMatch(output, /^200/);
+  const repo = (await owner.snapshot()).repos.find((entry) => entry.repoPath === mainRepo);
+  const entry = repo?.hosts.find((host) => host.host === "10.0.2.2");
+  assert.equal(entry?.allowedCount, 0);
+  assert.ok((entry?.blockedCount ?? 0) >= 1, JSON.stringify(entry));
+});
+
+await test("a killed VM is noticed and the next call gets a new one", async () => {
+  await run("bash", { command: "true" });
+  const pids = execFileSync("pgrep", ["-P", String(process.pid), "-f", "qemu-system"], {
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  assert.ok(pids.length > 0, "a qemu child process is running");
+  for (const pid of pids) process.kill(Number(pid), "SIGKILL");
+  const started = Date.now();
+  await assert.rejects(run("bash", { command: "sleep 30" }));
+  assert.ok(Date.now() - started < 15_000, "the failure is reported promptly");
+  assert.match(await run("bash", { command: "echo recovered" }), /recovered/);
+  assert.ok(pi.statuses.some((status) => status.startsWith("Sandbox: failed")));
+});
+
+await test("the VM still works after more than a minute idle", async () => {
+  await run("bash", { command: "true" });
+  await new Promise((resolve) => setTimeout(resolve, 65_000));
+  assert.match(await run("bash", { command: "echo awake" }), /awake/);
 });
 
 await test("closing the app stops every VM", async () => {

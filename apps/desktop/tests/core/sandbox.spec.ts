@@ -673,6 +673,46 @@ test("SBX-E5: quitting the app stops the thread's VM and a reopened thread start
   expect(await runningPids(vmPids), "QEMU processes left after quitting").toEqual([]);
 });
 
+test("SBX-E5: a VM left behind by a crashed app is stopped on the next launch", async ({}, testInfo) => {
+  test.setTimeout(FIRST_TOOL_CALL_TIMEOUT_MS + 3 * 60_000);
+  const fixture = await createFixture("sandbox-crash", {
+    "e5c-start": { name: "bash", arguments: { command: "uname -s" } },
+  });
+  let harness = await launchSandboxedApp(fixture);
+  let vmPids: number[] = [];
+  try {
+    const window = await harness.firstWindow();
+    await waitForWorkspaceByPath(window, fixture.workspacePath);
+    await startThreadFromSurface(window, { prompt: "run e5c-start" });
+    expect(await waitForScriptResult(window, "e5c-start", FIRST_TOOL_CALL_TIMEOUT_MS)).toMatch(
+      /^Linux$/m,
+    );
+    vmPids = (await qemuDescendants(appPid(harness))).map((row) => row.pid);
+    expect(vmPids.length).toBeGreaterThan(0);
+    // A crash: the app gets no chance to stop its VMs.
+    process.kill(appPid(harness), "SIGKILL");
+    await harness.close().catch(() => undefined);
+    testInfo.annotations.push({
+      type: "orphans",
+      description: `still running after the crash: ${(await runningPids(vmPids)).join(", ")}`,
+    });
+
+    harness = await launchSandboxedApp(fixture);
+    await harness.firstWindow();
+    await expect
+      .poll(() => runningPids(vmPids), {
+        message: "the relaunched app stops the crashed run's QEMU",
+        timeout: 15_000,
+      })
+      .toEqual([]);
+  } finally {
+    await harness.close().catch(() => undefined);
+    // Only this test's own VMs, in case the assertion above failed.
+    for (const pid of await runningPids(vmPids)) process.kill(pid, "SIGKILL");
+    await rememberWarmImages(fixture.userDataDir);
+  }
+});
+
 test("SBX-E6: archiving a thread stops its VM", async ({}, testInfo) => {
   test.setTimeout(FIRST_TOOL_CALL_TIMEOUT_MS + 2 * 60_000);
   const fixture = await createFixture("sandbox-archive", {

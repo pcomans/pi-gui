@@ -122,7 +122,22 @@ export class SandboxImages {
     const base = await this.ensure(this.baseName, undefined, BASE_IMAGE_SETUP);
     if (!config) return base;
     const script = projectSetupScript(config);
-    return this.ensure(`project-${hashOf(this.baseName, script)}`, base, script);
+    return this.ensure(this.projectName(script), base, script);
+  }
+
+  /** Whether `imageFor(config)` will have to build an image first. */
+  needsBuild(config: ProjectSandboxConfig | undefined): boolean {
+    const names = [
+      this.baseName,
+      ...(config ? [this.projectName(projectSetupScript(config))] : []),
+    ];
+    return names.some(
+      (name) => this.builds.get(name)?.state !== "ready" && !existsSync(this.imagePath(name)),
+    );
+  }
+
+  private projectName(script: string): string {
+    return `project-${hashOf(this.baseName, script)}`;
   }
 
   /** Forget a failed build so the next request tries again. */
@@ -173,6 +188,8 @@ export class SandboxImages {
     const options = {
       sessionLabel: "pi-gui sandbox image build",
       rootfs: { mode: "cow" as const, size: ROOT_DISK_SIZE },
+      // See SandboxSession: resuming from Gondolin's idle pause fails on macOS.
+      sandbox: { qemuIdlePauseMs: 0 },
     };
     const vm: GondolinVm = from
       ? await VmCheckpoint.load(from).resume<GondolinVm>(options)

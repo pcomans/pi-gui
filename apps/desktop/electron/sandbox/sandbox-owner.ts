@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import type {
@@ -34,6 +36,7 @@ export class SandboxOwner {
   private readonly sessions = new Set<SandboxSession>();
   private readonly knownRepos = new Set<string>();
   private readonly listeners = new Set<() => void>();
+  private readonly vmPids = new Set<number>();
   private qemuFound: boolean | undefined;
 
   constructor(private readonly options: SandboxOwnerOptions) {
@@ -47,6 +50,8 @@ export class SandboxOwner {
   async initialize(): Promise<void> {
     await this.store.load();
     this.qemuFound = await findQemu();
+    await stopOrphanedVms(await this.store.loadVmPids().catch(() => []));
+    await this.store.saveVmPids([]);
   }
 
   enabled(): boolean {
@@ -143,13 +148,21 @@ export class SandboxOwner {
           }
           return this.images.imageFor(config);
         },
-        decide: (repoPath, host, sessionRef) => this.store.decide(repoPath, host, sessionRef),
+        imageNeedsBuild: (config) => this.images.needsBuild(config),
+        network: {
+          check: (repoPath, host) => this.store.check(repoPath, host),
+          explicitlyAllowed: (repoPath, host) => this.store.explicitlyAllowed(repoPath, host),
+          record: (repoPath, host, allowed, sessionRef) =>
+            this.store.record(repoPath, host, allowed, sessionRef),
+        },
         noteRepository: (repoPath) => {
           if (this.knownRepos.has(repoPath)) return;
           this.knownRepos.add(repoPath);
           this.changed();
         },
         changed: () => this.changed(),
+        vmStarted: (pid) => this.trackVm(pid, true),
+        vmStopped: (pid) => this.trackVm(pid, false),
       },
       onStatus,
     );
@@ -159,7 +172,35 @@ export class SandboxOwner {
     return session;
   }
 
+  private trackVm(pid: number, running: boolean): void {
+    if (running) this.vmPids.add(pid);
+    else this.vmPids.delete(pid);
+    this.store
+      .saveVmPids([...this.vmPids])
+      .catch((error: unknown) => console.error("[sandbox] save vm pids", error));
+  }
+
   private changed(): void {
     for (const listener of this.listeners) listener();
+  }
+}
+
+/**
+ * Stop QEMU processes a previous run started and could not stop (a crash or force quit). Only
+ * pids this app recorded, still QEMU and orphaned to init, are touched.
+ */
+async function stopOrphanedVms(pids: readonly number[]): Promise<void> {
+  for (const pid of pids) {
+    const row = await promisify(execFile)("ps", ["-o", "ppid=,comm=", "-p", String(pid)])
+      .then(({ stdout }) => stdout.trim())
+      .catch(() => "");
+    const [ppid, command = ""] = row.split(/\s+/, 2);
+    if (ppid === "1" && command.includes("qemu-system")) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
   }
 }

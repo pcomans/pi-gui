@@ -20,6 +20,9 @@ The [sandbox owner](../../apps/desktop/electron/sandbox/sandbox-owner.ts) gives 
 - **Same paths.** The checkout is mounted at its host path, so file paths, `git` metadata and transcript paths need no translation. A linked worktree also mounts its repository's shared git directory, so commits work; skill folders pi announces are mounted read-only.
 - **Images.** The first VM in a profile builds a base image from Gondolin's Alpine image (git, ripgrep, gh, node, pnpm, curl). Later VMs resume from that checkpoint in tens of milliseconds. A project can add Alpine packages and setup commands in `.pi/sandbox.json`; each distinct file gets its own cached image. Images live in `<userData>/sandbox/images`.
 - **Fail closed.** If the VM cannot start (no QEMU, image build failed), tool calls fail with the reason. They never fall back to the host.
+- **Recovery.** A VM whose process died or broke is discarded: the call that hit it fails (it may have partly run and is never repeated) and the next call starts a new VM. QEMU processes are recorded in `<userData>/sandbox/vm-processes.json`, so after a crash the next launch stops any it left behind.
+- **Other worktrees.** A thread's VM cannot see other worktrees' checkouts, so their admin folders in the shared git directory are mounted read-only and `gc.worktreePruneExpire` is `never`; git inside one sandbox cannot prune another thread's worktree.
+- **Stop.** Stop and timeouts kill the command's whole process tree inside the VM. `write` and `edit` refuse paths outside the checkout (except `/tmp`), because those would land on the VM's throwaway disk.
 
 ### `.pi/sandbox.json`
 
@@ -44,7 +47,7 @@ All guest HTTP(S) traffic passes through Gondolin's host-side proxy. For each re
 2. In Allowlist mode, a host not on the allowlist is refused.
 3. Otherwise the request goes through.
 
-Refused requests get HTTP 403 with an explanation the model can report. Every decision is logged by host name with counts and the last thread (never URLs, headers or bodies) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists the log per repository and changes rules immediately, without restarting VMs. Private and loopback addresses are blocked by Gondolin; other TCP traffic is not forwarded.
+Refused requests get HTTP 403 with an explanation the model can report. Every decision is logged by host name with counts and the last thread (never URLs, headers or bodies) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists the log per repository and changes rules immediately, without restarting VMs. Private and loopback addresses are refused unless the person allows that exact host. Other TCP traffic (for example a database port) is not forwarded; the connection appears to open but nothing is sent, and it is not logged.
 
 ## Limitations
 

@@ -131,6 +131,20 @@ export function decodeSandboxNetworkLog(value: unknown): LogFile {
   return { version: LOG_VERSION, repos };
 }
 
+function decodeVmPids(value: unknown): { version: 1; pids: number[] } {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.pids)) {
+    fail("vm-processes", "pids");
+  }
+  return {
+    version: 1,
+    pids: value.pids.map((pid, index) =>
+      typeof pid === "number" && Number.isInteger(pid) && pid > 1
+        ? pid
+        : fail("vm-processes", `pids[${index}]`),
+    ),
+  };
+}
+
 /**
  * Sandbox preferences and the outbound host log. Rules belong to a repository's main checkout, so
  * its worktrees share them. The log keeps host names and counts only, never URLs or contents.
@@ -141,10 +155,12 @@ export class SandboxSettingsStore {
   private logSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly settingsPath: string;
   private readonly logPath: string;
+  private readonly vmPidsPath: string;
 
   constructor(directory: string) {
     this.settingsPath = path.join(directory, "sandbox-settings.json");
     this.logPath = path.join(directory, "network-log.json");
+    this.vmPidsPath = path.join(directory, "vm-processes.json");
   }
 
   async load(): Promise<void> {
@@ -186,6 +202,17 @@ export class SandboxSettingsStore {
     return verdict;
   }
 
+  /** The verdict alone; the caller records the outcome once it is known. */
+  check(repoPath: string, host: string): NetworkVerdict {
+    return this.verdict(repoPath, host.toLowerCase());
+  }
+
+  /** Whether the person allowed this exact host, which private addresses require. */
+  explicitlyAllowed(repoPath: string, host: string): boolean {
+    const rules = this.settings.repos[repoPath];
+    return Boolean(rules?.allowedHosts.some((pattern) => sandboxHostMatches(host, pattern)));
+  }
+
   repoRecords(extraRepoPaths: readonly string[]): SandboxRepoNetworkRecord[] {
     const repoPaths = new Set([
       ...Object.keys(this.settings.repos),
@@ -205,6 +232,20 @@ export class SandboxSettingsStore {
         ),
       };
     });
+  }
+
+  /** QEMU processes this app started, so a later launch can stop any a crash left behind. */
+  async saveVmPids(pids: readonly number[]): Promise<void> {
+    await writeFileAtomicQueued(
+      this.vmPidsPath,
+      `${JSON.stringify({ version: 1, pids })}\n`,
+      decodeVmPids,
+    );
+  }
+
+  async loadVmPids(): Promise<number[]> {
+    const saved = await readJsonWithBackup(this.vmPidsPath);
+    return saved.value === undefined ? [] : decodeVmPids(saved.value).pids;
   }
 
   async flush(): Promise<void> {
@@ -235,7 +276,7 @@ export class SandboxSettingsStore {
     return { allowed: true };
   }
 
-  private record(
+  record(
     repoPath: string,
     host: string,
     allowed: boolean,
@@ -243,6 +284,7 @@ export class SandboxSettingsStore {
   ): void {
     const entries = this.log.get(repoPath) ?? new Map<string, SandboxHostLogEntry>();
     this.log.set(repoPath, entries);
+    host = host.toLowerCase();
     const now = new Date().toISOString();
     const previous = entries.get(host);
     entries.delete(host);

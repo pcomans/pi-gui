@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -56,21 +56,42 @@ export interface RepositoryIdentity {
   readonly repoPath: string;
   /** Shared git directory when it lies outside the checkout, as for linked worktrees. */
   readonly externalGitDir?: string;
+  /**
+   * Other worktrees' admin folders (`<git dir>/worktrees/<name>`). The sandbox cannot see their
+   * checkouts, so git there would think them gone and `git worktree prune` would delete them.
+   */
+  readonly otherWorktreeAdminDirs: readonly string[];
 }
 
 export async function repositoryIdentity(checkoutPath: string): Promise<RepositoryIdentity> {
   const checkout = await realpath(checkoutPath);
   let commonDir: string;
+  let gitDir: string;
   try {
-    commonDir = await realpath(
-      await run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], checkout),
-    );
+    const [common, own] = (
+      await run(
+        "git",
+        ["rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"],
+        checkout,
+      )
+    ).split("\n");
+    commonDir = await realpath(common!);
+    gitDir = await realpath(own!);
   } catch {
-    return { repoPath: checkout };
+    return { repoPath: checkout, otherWorktreeAdminDirs: [] };
   }
   const repoPath = path.basename(commonDir) === ".git" ? path.dirname(commonDir) : commonDir;
   const insideCheckout = !path.relative(checkout, commonDir).startsWith("..");
-  return { repoPath, ...(insideCheckout ? {} : { externalGitDir: commonDir }) };
+  const adminRoot = path.join(commonDir, "worktrees");
+  const otherWorktreeAdminDirs = (await readdir(adminRoot, { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(adminRoot, entry.name))
+    .filter((dir) => dir !== gitDir);
+  return {
+    repoPath,
+    ...(insideCheckout ? {} : { externalGitDir: commonDir }),
+    otherWorktreeAdminDirs,
+  };
 }
 
 /** The person's git name and email, so commits made in the sandbox are theirs. */

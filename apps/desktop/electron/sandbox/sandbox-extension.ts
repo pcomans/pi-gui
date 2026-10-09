@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   createBashToolDefinition,
@@ -60,12 +61,25 @@ export function createSandboxExtension(
       return session.use(work);
     };
 
+    // Anything outside the checkout lands on the VM's throwaway disk, so writing there would
+    // report success for a file the person never sees. Only the VM's scratch folders are allowed.
+    const writable = (file: string) => {
+      if (WRITABLE_SCRATCH.some((root) => isWithin(root, file)) || isWithin(cwd, file)) return;
+      throw new Error(
+        `${file} is outside this thread's checkout. In the sandbox, write and edit can only change files under ${cwd} (or /tmp inside the sandbox).`,
+      );
+    };
     const fileOps = {
       readFile: (file: string) => use((vm) => vm.fs.readFile(file)),
-      writeFile: (file: string, content: string) =>
-        use((vm) => vm.fs.writeFile(file, content, { encoding: "utf8" })),
+      writeFile: (file: string, content: string) => {
+        writable(file);
+        return use((vm) => vm.fs.writeFile(file, content, { encoding: "utf8" }));
+      },
       access: (file: string) => use((vm) => vm.fs.access(file)),
-      mkdir: (dir: string) => use((vm) => vm.fs.mkdir(dir, { recursive: true })),
+      mkdir: (dir: string) => {
+        writable(dir);
+        return use((vm) => vm.fs.mkdir(dir, { recursive: true }));
+      },
     };
     const bashOps: BashOperations = {
       exec: (command, commandCwd, { onData, signal, timeout }) =>
@@ -82,8 +96,11 @@ export function createSandboxExtension(
                   controller.abort();
                 }, timeout * 1000)
               : undefined;
+          // Aborting Gondolin's exec leaves the command running, so record the shell's pid and
+          // kill its process tree on Stop or timeout.
+          const pidFile = `/tmp/pi-gui-exec-${randomUUID()}.pid`;
           try {
-            const proc = vm.exec(["/bin/bash", "-c", command], {
+            const proc = vm.exec(["/bin/bash", "-c", RUN_RECORDING_PID, pidFile, command], {
               cwd: commandCwd,
               signal: controller.signal,
               stdout: "pipe",
@@ -92,6 +109,13 @@ export function createSandboxExtension(
             for await (const chunk of proc.output()) onData(chunk.data);
             return { exitCode: (await proc).exitCode };
           } catch (error) {
+            if (signal?.aborted || timedOut) {
+              await vm
+                .exec(["/bin/sh", "-c", KILL_RECORDED_TREE, pidFile], {
+                  signal: AbortSignal.timeout(5_000),
+                })
+                .catch(() => undefined);
+            }
             if (signal?.aborted) throw new Error("aborted");
             if (timedOut) throw new Error(`timeout:${timeout}`);
             throw error;
@@ -160,7 +184,20 @@ export function createSandboxExtension(
 }
 
 function statusText(state: SandboxSessionState, message: string | undefined): string {
-  return state === "failed" && message ? `${STATUS_TEXT[state]}: ${message}` : STATUS_TEXT[state];
+  return (state === "failed" || state === "starting") && message
+    ? `${STATUS_TEXT[state]}: ${message}`
+    : STATUS_TEXT[state];
+}
+
+const WRITABLE_SCRATCH = ["/tmp"];
+/** `$0` is the pid file, `$1` the command; the pid is the command shell's parent. */
+const RUN_RECORDING_PID = 'echo $$ > "$0"; /bin/bash -c "$1"; s=$?; rm -f "$0"; exit $s';
+const KILL_RECORDED_TREE =
+  'p=$(cat "$0" 2>/dev/null) || exit 0; k() { for c in $(pgrep -P "$1"); do k "$c"; done; kill -9 "$1" 2>/dev/null; }; k "$p"; rm -f "$0"';
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 const SANDBOX_PROMPT = `Tool sandbox: the read, write, edit and bash tools run inside a Linux virtual machine (Alpine). The current working directory is mounted at the same path, so file paths are unchanged, and changes there are visible to the user. The rest of the host machine (home directory, other projects, credentials) is not available. Git, ripgrep (rg), gh, node and pnpm are installed; install more with \`apk add\` (it lasts until the sandbox restarts). Use rg, find and ls through bash. Network access may be limited by the user's policy; a blocked request returns HTTP 403 with an explanation, which you should report instead of retrying. GitHub credentials are available to git and gh as placeholders the host fills in.`;
