@@ -445,6 +445,11 @@
   overflow-wrap: anywhere;
 }
 
+/* Where a sandboxed thread's tool ran; inherits the row metadata's quiet colour. */
+.timeline-tool__location {
+  white-space: nowrap;
+}
+
 .timeline-tool__status-pip {
   width: 6px;
   height: 6px;

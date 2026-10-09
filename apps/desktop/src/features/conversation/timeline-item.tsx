@@ -24,6 +24,7 @@ import { ExtensionCardItem, type RunExtensionAction } from "./extension-card";
 import { ImageAttachmentThumb } from "./image-attachment-thumb";
 import { MessageMarkdown } from "./message-markdown";
 import { stringifyToolValue, toolOutputImageSrc, toolOutputImages } from "./tool-output-images";
+import { ToolRunLocationLabel } from "./tool-run-location";
 import { TurnChangesCard, type OpenTurnChange } from "./turn-changes-card";
 import type { WorkspaceFileLine } from "./workspace-file-line";
 import { InlineDiff, extractDiffFromOutput } from "../../ui/diff-inline";
@@ -322,6 +323,7 @@ function TimelineToolCallItem({
           <span className="timeline-tool__meta-inline">
             <span className="timeline-tool__status-pip" aria-hidden="true" />
             {`${item.toolName} \u00b7 ${statusLabel(item.status)}`}
+            <ToolRunLocationLabel toolName={item.toolName} />
           </span>
         </button>
         {filePath && onViewFileInDiff ? (

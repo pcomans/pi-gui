@@ -22,6 +22,7 @@ import { ThreadSearchBar } from "./thread-search";
 import type { RunExtensionAction } from "./extension-card";
 import { TimelineItem } from "./timeline-item";
 import { sameRowContent, type TimelineRow } from "./timeline-layout";
+import { ThreadSandboxedContext } from "./tool-run-location";
 import type { OpenTurnChange } from "./turn-changes-card";
 import type { WorkspaceFileLine } from "./workspace-file-line";
 import { SparkIcon } from "../../ui/icons";
@@ -49,6 +50,8 @@ interface ConversationTimelineProps {
   readonly onOpenWorkspaceFileLine?: (target: WorkspaceFileLine) => void;
   readonly onExtensionAction?: RunExtensionAction;
   readonly extensionToolLabels: ExtensionToolLabels;
+  /** Whether this thread runs its tools in a sandbox; tool rows then say where each ran. */
+  readonly sandboxed: boolean;
   readonly scheduledOrigins?: ReadonlyMap<string, ScheduledTaskOrigin>;
   readonly workspacePath?: string;
   readonly annotations?: TranscriptAnnotations;
@@ -68,6 +71,7 @@ export function ConversationTimeline({
   onOpenWorkspaceFileLine,
   onExtensionAction,
   extensionToolLabels,
+  sandboxed,
   scheduledOrigins,
   workspacePath,
   annotations,
@@ -120,94 +124,96 @@ export function ConversationTimeline({
   }, [transcript]);
   return (
     <ExtensionToolLabelsContext.Provider value={extensionToolLabels}>
-      <div className="timeline-surface" ref={surfaceRef}>
-        <div className="timeline-column">
-          {threadSearch.isOpen ? (
-            <ThreadSearchBar
-              query={threadSearch.query}
-              matchCount={threadSearch.matchCount}
-              activeIndex={threadSearch.activeIndex}
-              inputRef={threadSearch.inputRef}
-              onSearch={threadSearch.search}
-              onNext={() => threadSearch.goToMatch(1)}
-              onPrev={() => threadSearch.goToMatch(-1)}
-              onClose={threadSearch.close}
-            />
-          ) : null}
-          <div
-            className="timeline-pane timeline-pane--thread"
-            data-testid="timeline-pane"
-            ref={viewport.attachPane}
-            tabIndex={0}
-          >
-            {transcriptFailed ? (
-              <div className="timeline" data-testid="transcript">
-                <TranscriptHydrateError
-                  retrying={transcriptFailed.retrying}
-                  onRetry={onRetryTranscript}
-                />
-              </div>
-            ) : isTranscriptLoading ? (
-              <div className="timeline" data-testid="transcript">
-                <TranscriptSkeleton />
-              </div>
-            ) : transcript.length === 0 ? (
-              <div className="timeline" data-testid="transcript">
-                <TranscriptEmptyState />
-              </div>
-            ) : (
-              <div
-                className="timeline timeline--virtualized"
-                data-testid="transcript"
-                style={{ height: viewport.totalHeight }}
-              >
-                {viewport.visibleRows.map(({ item, top, height }, index, rows) => (
-                  <MeasuredTimelineItem
-                    key={item.id}
-                    item={item}
-                    offset={top - rowBottom(rows[index - 1])}
-                    height={height}
-                    className="timeline__virtual-row"
-                    onHeightChange={viewport.measureRow}
-                    generation={viewport.layoutGeneration}
-                    expandedToolCallIds={expandedToolCallIds}
-                    onToggleToolCall={toggleToolCall}
-                    onViewFileInDiff={onViewFileInDiff}
-                    onOpenTurnChange={onOpenTurnChange}
-                    sourceMessageIndex={renderedMessageIndexById.get(item.id)}
-                    onForkFromMessage={onForkFromMessage}
-                    onOpenWorkspaceFileLine={onOpenWorkspaceFileLine}
-                    onExtensionAction={onExtensionAction}
-                    workspacePath={workspacePath}
-                    annotationMarkers={
-                      markersByMessage.get(item.id) ??
-                      (item.kind === "message" && item.sourceMessageId
-                        ? markersByMessage.get(item.sourceMessageId)
-                        : undefined) ??
-                      NO_MARKERS
-                    }
-                    onOpenAnnotation={annotationSelection.openAnnotation}
-                    scheduledOrigin={
-                      item.kind === "message" ? scheduledOrigins?.get(item.id) : undefined
-                    }
-                  />
-                ))}
-              </div>
-            )}
-            {!transcriptFailed && viewport.showJumpToLatest ? (
-              <button
-                className="timeline-jump"
-                data-testid="timeline-jump"
-                type="button"
-                onClick={viewport.jumpToLatest}
-              >
-                New activity below
-              </button>
+      <ThreadSandboxedContext.Provider value={sandboxed}>
+        <div className="timeline-surface" ref={surfaceRef}>
+          <div className="timeline-column">
+            {threadSearch.isOpen ? (
+              <ThreadSearchBar
+                query={threadSearch.query}
+                matchCount={threadSearch.matchCount}
+                activeIndex={threadSearch.activeIndex}
+                inputRef={threadSearch.inputRef}
+                onSearch={threadSearch.search}
+                onNext={() => threadSearch.goToMatch(1)}
+                onPrev={() => threadSearch.goToMatch(-1)}
+                onClose={threadSearch.close}
+              />
             ) : null}
+            <div
+              className="timeline-pane timeline-pane--thread"
+              data-testid="timeline-pane"
+              ref={viewport.attachPane}
+              tabIndex={0}
+            >
+              {transcriptFailed ? (
+                <div className="timeline" data-testid="transcript">
+                  <TranscriptHydrateError
+                    retrying={transcriptFailed.retrying}
+                    onRetry={onRetryTranscript}
+                  />
+                </div>
+              ) : isTranscriptLoading ? (
+                <div className="timeline" data-testid="transcript">
+                  <TranscriptSkeleton />
+                </div>
+              ) : transcript.length === 0 ? (
+                <div className="timeline" data-testid="transcript">
+                  <TranscriptEmptyState />
+                </div>
+              ) : (
+                <div
+                  className="timeline timeline--virtualized"
+                  data-testid="transcript"
+                  style={{ height: viewport.totalHeight }}
+                >
+                  {viewport.visibleRows.map(({ item, top, height }, index, rows) => (
+                    <MeasuredTimelineItem
+                      key={item.id}
+                      item={item}
+                      offset={top - rowBottom(rows[index - 1])}
+                      height={height}
+                      className="timeline__virtual-row"
+                      onHeightChange={viewport.measureRow}
+                      generation={viewport.layoutGeneration}
+                      expandedToolCallIds={expandedToolCallIds}
+                      onToggleToolCall={toggleToolCall}
+                      onViewFileInDiff={onViewFileInDiff}
+                      onOpenTurnChange={onOpenTurnChange}
+                      sourceMessageIndex={renderedMessageIndexById.get(item.id)}
+                      onForkFromMessage={onForkFromMessage}
+                      onOpenWorkspaceFileLine={onOpenWorkspaceFileLine}
+                      onExtensionAction={onExtensionAction}
+                      workspacePath={workspacePath}
+                      annotationMarkers={
+                        markersByMessage.get(item.id) ??
+                        (item.kind === "message" && item.sourceMessageId
+                          ? markersByMessage.get(item.sourceMessageId)
+                          : undefined) ??
+                        NO_MARKERS
+                      }
+                      onOpenAnnotation={annotationSelection.openAnnotation}
+                      scheduledOrigin={
+                        item.kind === "message" ? scheduledOrigins?.get(item.id) : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+              {!transcriptFailed && viewport.showJumpToLatest ? (
+                <button
+                  className="timeline-jump"
+                  data-testid="timeline-jump"
+                  type="button"
+                  onClick={viewport.jumpToLatest}
+                >
+                  New activity below
+                </button>
+              ) : null}
+            </div>
           </div>
+          {annotationSelection.layer}
         </div>
-        {annotationSelection.layer}
-      </div>
+      </ThreadSandboxedContext.Provider>
     </ExtensionToolLabelsContext.Provider>
   );
 }
