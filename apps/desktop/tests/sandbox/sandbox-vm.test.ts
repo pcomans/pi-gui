@@ -68,6 +68,10 @@ async function run(tool: string, params: Record<string, unknown>): Promise<strin
 
 async function setUp(): Promise<void> {
   root = await realpath(await mkdtemp(join(tmpdir(), "pi-gui-sandbox-vm-")));
+  // The sandbox asks the host's gh for a token; keep the person's real login out of tests.
+  process.env.GH_CONFIG_DIR = join(root, "gh-config");
+  delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
   mainRepo = join(root, "repo");
   worktree = join(root, "repo-wt");
   await mkdir(mainRepo);
@@ -92,8 +96,9 @@ async function setUp(): Promise<void> {
 await setUp();
 
 await test("bash runs in a Linux VM at the checkout's own path", async () => {
-  const output = await run("bash", { command: "uname -s; pwd" });
+  const output = await run("bash", { command: "uname -s; pwd; pnpm --version" });
   assert.match(output, /Linux/);
+  assert.match(output, /\n\d+\.\d+\.\d+/);
   assert.ok(output.includes(worktree), output);
   assert.ok(pi.statuses.includes("Sandbox: on"), pi.statuses.join());
 });

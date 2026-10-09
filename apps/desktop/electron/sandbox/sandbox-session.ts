@@ -153,7 +153,13 @@ export class SandboxSession {
       const vm: GondolinVm = await VmCheckpoint.load(image).resume({
         sessionLabel: `pi-gui ${path.basename(this.checkoutPath)}`,
         httpHooks,
-        env: { ...env, ...(await gitIdentityEnv(this.checkoutPath)), HOME: "/root" },
+        env: {
+          ...env,
+          ...(await gitIdentityEnv(this.checkoutPath)),
+          HOME: "/root",
+          // Gondolin's default PATH leaves out /usr/local/bin, where pnpm is installed.
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        },
         memory: "2G",
         cpus: Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2))),
         vfs: { mounts },

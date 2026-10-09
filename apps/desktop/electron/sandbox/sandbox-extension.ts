@@ -7,10 +7,12 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
-  type BashOperations,
-  type ExtensionAPI,
-  type ExtensionContext,
-  type ExtensionFactory,
+} from "@pi-gui/pi-sdk-driver";
+import type {
+  BashOperations,
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { SANDBOX_STATUS_KEY, type SandboxSessionState } from "../../contracts/sandbox";
