@@ -1067,6 +1067,13 @@ app
     let windowBackgroundPresetId = store.snapshot().themePresetId;
     stopPruningTerminals = store.subscribe((state) => {
       integratedTerminalShell = state.integratedTerminalShell;
+      sandbox.stopArchived(({ workspaceId, sessionId }) =>
+        Boolean(
+          state.workspaces
+            .find((workspace) => workspace.id === workspaceId)
+            ?.sessions.find((session) => session.id === sessionId)?.archivedAt,
+        ),
+      );
       if (state.themePresetId !== windowBackgroundPresetId) {
         windowBackgroundPresetId = state.themePresetId;
         refreshWindowBackgrounds();

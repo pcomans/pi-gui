@@ -253,8 +253,9 @@ async function timed<T>(testInfo: TestInfo, label: string, work: () => Promise<T
   return result;
 }
 
+/** The composer chip; its data-state is starting, on, failed or off. */
 function sandboxStatus(window: Page) {
-  return window.getByTestId("extension-dock-summary");
+  return window.getByTestId("sandbox-badge");
 }
 
 interface ProcessRow {
@@ -320,7 +321,9 @@ test("SBX-A2/B1: a new thread's bash runs in Linux and the status shows the sand
       async () => {
         await startThreadFromSurface(window, { prompt: "run a2-uname" });
         // The base image build takes far longer than a render, so Starting is observable.
-        await expect(sandboxStatus(window)).toHaveText("Sandbox: starting", { timeout: 60_000 });
+        await expect(sandboxStatus(window)).toHaveAttribute("data-state", "starting", {
+          timeout: 60_000,
+        });
         return waitForScriptResult(window, "a2-uname", FIRST_TOOL_CALL_TIMEOUT_MS);
       },
     );
@@ -330,14 +333,14 @@ test("SBX-A2/B1: a new thread's bash runs in Linux and the status shows the sand
     expect(output).toContain("Alpine");
     // The checkout is mounted at the same absolute path it has on the host.
     expect(output).toContain(fixture.workspacePath);
-    await expect(sandboxStatus(window)).toHaveText("Sandbox: on");
+    await expect(sandboxStatus(window)).toHaveAttribute("data-state", "on");
 
     const again = await timed(testInfo, "second tool call (VM already running)", async () => {
       await sendPrompt(window, "run a2-again");
       return waitForScriptResult(window, "a2-again", TOOL_CALL_TIMEOUT_MS);
     });
     expect(again).toMatch(/^Linux (aarch64|x86_64)$/m);
-    await expect(sandboxStatus(window)).toHaveText("Sandbox: on");
+    await expect(sandboxStatus(window)).toHaveAttribute("data-state", "on");
   } finally {
     await harness.close();
     await rememberWarmImages(fixture.userDataDir);
@@ -481,7 +484,7 @@ test("SBX-E1: a new worktree thread can run git status and git commit in its san
     expect(output).toContain(
       "commit=Pi App Tests <pi-gui-tests@example.com>|Commit from the sandbox",
     );
-    await expect(sandboxStatus(window)).toHaveText("Sandbox: on");
+    await expect(sandboxStatus(window)).toHaveAttribute("data-state", "on");
 
     const state = await getDesktopState(window);
     const worktree = state.workspaces.find((entry) => entry.id === state.selectedWorkspaceId);
@@ -596,8 +599,8 @@ test("SBX-G1: without QEMU the tool fails closed and nothing runs on the host", 
     expect(output).toContain("isError=true");
     expect(output).toContain("QEMU is not installed");
     expect(output).not.toContain("Darwin");
-    await expect(sandboxStatus(window)).toContainText("Sandbox: failed");
-    await expect(sandboxStatus(window)).toContainText("QEMU");
+    await expect(sandboxStatus(window)).toHaveAttribute("data-state", "failed");
+    await expect(sandboxStatus(window)).toHaveAttribute("title", /QEMU is not installed/);
     expect(existsSync(join(fixture.workspacePath, "g1-marker.txt"))).toBe(false);
 
     await sendPrompt(window, "run g1-write");

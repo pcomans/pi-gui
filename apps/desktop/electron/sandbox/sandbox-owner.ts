@@ -105,6 +105,15 @@ export class SandboxOwner {
     return this.snapshot();
   }
 
+  /** Stop the VMs of archived threads; a restored thread starts a new one on its next call. */
+  stopArchived(isArchived: (ref: SandboxSessionRef) => boolean): void {
+    for (const session of this.sessions) {
+      if (session.state !== "idle" && isArchived(session.ref)) {
+        session.restart().catch((error: unknown) => console.error("[sandbox] stop", error));
+      }
+    }
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -128,7 +137,9 @@ export class SandboxOwner {
       {
         imageFor: async (config) => {
           if (!this.qemuFound && !(this.qemuFound = await findQemu())) {
-            throw new Error(`QEMU is not installed. Install it with: ${qemuInstallHint()}`);
+            throw new Error(
+              `QEMU is not installed. Install it with \`${qemuInstallHint()}\`, or turn the sandbox off in Settings > Sandbox.`,
+            );
           }
           return this.images.imageFor(config);
         },
