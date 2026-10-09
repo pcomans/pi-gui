@@ -16,6 +16,7 @@ import type {
 import type { ClipboardImageRead } from "./composer-attachments";
 import type { SessionRef } from "@pi-gui/session-driver/types";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "./workbench";
+import type { SandboxSettingsUpdate, SandboxSnapshot } from "./sandbox";
 import type {
   TurnChangesInput,
   TurnChangesResult,
@@ -177,6 +178,9 @@ export const desktopIpc = {
   removeMcpServer: "pi-gui:remove-mcp-server",
   setMcpServerEnabled: "pi-gui:set-mcp-server-enabled",
   setCodemodeAlwaysOn: "pi-gui:set-codemode-always-on",
+  getSandboxSnapshot: "pi-gui:get-sandbox-snapshot",
+  updateSandboxSettings: "pi-gui:update-sandbox-settings",
+  prepareSandbox: "pi-gui:prepare-sandbox",
   respondToHostUiRequest: "pi-gui:respond-to-host-ui-request",
   setNotificationPreferences: "pi-gui:set-notification-preferences",
   setIntegratedTerminalShell: "pi-gui:set-integrated-terminal-shell",
@@ -782,6 +786,10 @@ export interface PiDesktopApi {
     enabled: boolean,
   ): Promise<DesktopAppState>;
   listMcpServers(workspaceId: string): Promise<McpServersSnapshot>;
+  getSandboxSnapshot(): Promise<SandboxSnapshot>;
+  updateSandboxSettings(update: SandboxSettingsUpdate): Promise<SandboxSnapshot>;
+  /** Build the sandbox image now, or retry after a failure. */
+  prepareSandbox(): Promise<SandboxSnapshot>;
   addMcpServer(workspaceId: string, server: NewMcpServerInput): Promise<DesktopAppState>;
   removeMcpServer(workspaceId: string, name: string): Promise<DesktopAppState>;
   setMcpServerEnabled(

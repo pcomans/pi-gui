@@ -185,6 +185,7 @@ export interface DesktopAppStoreOptions {
     | "desktopExtensions"
     | "onTurnCaptureBoundary"
     | "openUrl"
+    | "sessionExtensions"
     | "turnCaptureTimeoutMs"
   >;
   readonly generateThreadTitleOverride?: (

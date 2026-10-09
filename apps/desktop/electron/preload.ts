@@ -31,6 +31,7 @@ import {
 import type { ExtensionActionEffect, ExtensionActionRequest } from "../contracts/extension-actions";
 import type { ClipboardImageRead } from "../contracts/composer-attachments";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "../contracts/workbench";
+import type { SandboxSettingsUpdate, SandboxSnapshot } from "../contracts/sandbox";
 import type {
   TurnChangesInput,
   TurnChangesResult,
@@ -385,6 +386,11 @@ contextBridge.exposeInMainWorld("piApp", {
       filePath,
       enabled,
     ) as Promise<DesktopAppState>,
+  getSandboxSnapshot: () =>
+    ipcRenderer.invoke(desktopIpc.getSandboxSnapshot) as Promise<SandboxSnapshot>,
+  updateSandboxSettings: (update: SandboxSettingsUpdate) =>
+    ipcRenderer.invoke(desktopIpc.updateSandboxSettings, update) as Promise<SandboxSnapshot>,
+  prepareSandbox: () => ipcRenderer.invoke(desktopIpc.prepareSandbox) as Promise<SandboxSnapshot>,
   listMcpServers: (workspaceId: string) =>
     ipcRenderer.invoke(desktopIpc.listMcpServers, workspaceId) as Promise<McpServersSnapshot>,
   addMcpServer: (workspaceId: string, server: NewMcpServerInput) =>

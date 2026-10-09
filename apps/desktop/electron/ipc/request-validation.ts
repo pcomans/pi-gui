@@ -40,6 +40,7 @@ import {
   type UpdateScheduledTaskInput,
 } from "../../contracts/scheduled-tasks";
 import { assertComposerAttachmentsAccepted } from "../../contracts/composer-attachments";
+import type { SandboxNetworkMode, SandboxSettingsUpdate } from "../../contracts/sandbox";
 import {
   decodeTaskWorkbenchTemplate,
   type SaveTaskWorkbenchTemplateInput,
@@ -388,6 +389,43 @@ export function expectNewMcpServerInput(value: unknown): NewMcpServerInput {
     command: expectNonEmptyString(record.command, "server.command"),
     args: record.args === undefined ? [] : [...expectStringArray(record.args, "server.args")],
   };
+}
+
+function expectSandboxNetworkMode(value: unknown, name: string): SandboxNetworkMode {
+  if (value !== "allow-all" && value !== "allowlist") {
+    throw new TypeError(`${name} must be allow-all or allowlist`);
+  }
+  return value;
+}
+
+export function expectSandboxSettingsUpdate(value: unknown): SandboxSettingsUpdate {
+  const record = expectRecord(value, "update");
+  switch (record.kind) {
+    case "enabled":
+      return { kind: "enabled", enabled: expectBoolean(record.enabled, "update.enabled") };
+    case "default-network-mode":
+      return { kind: "default-network-mode", mode: expectSandboxNetworkMode(record.mode, "mode") };
+    case "repo-network-mode":
+      return {
+        kind: "repo-network-mode",
+        repoPath: expectNonEmptyString(record.repoPath, "update.repoPath"),
+        mode: record.mode === null ? null : expectSandboxNetworkMode(record.mode, "mode"),
+      };
+    case "host-rule": {
+      const rule = record.rule;
+      if (rule !== null && rule !== "allow" && rule !== "block") {
+        throw new TypeError("update.rule must be allow, block or null");
+      }
+      return {
+        kind: "host-rule",
+        repoPath: expectNonEmptyString(record.repoPath, "update.repoPath"),
+        host: expectNonEmptyString(record.host, "update.host"),
+        rule,
+      };
+    }
+    default:
+      throw new TypeError("update.kind is not a sandbox setting");
+  }
 }
 
 export function expectCustomProviderProbeInput(value: unknown): CustomProviderProbeInput {

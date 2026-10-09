@@ -169,6 +169,11 @@ export interface PiSdkDriverOptions {
   ) => Promise<AgentSessionRuntime>;
   readonly agentDir?: string;
   readonly builtinExtensions?: readonly BuiltinExtension[];
+  /**
+   * Hidden extensions the host adds to every session of a workspace. Unlike built-ins, users
+   * cannot switch them off in Settings; the tool sandbox relies on that.
+   */
+  readonly sessionExtensions?: (workspace: WorkspaceRef) => readonly InlineExtension[];
   /** Opens MCP sign-in pages; pi opens the platform browser when omitted. */
   readonly openUrl?: (url: string) => void;
   /** Read each time a session loads or reloads its extensions; defaults to enabled. */
@@ -298,6 +303,7 @@ export class SessionSupervisor {
   private readonly agentDir: string | undefined;
   private readonly builtinExtensions: readonly InlineExtension[];
   private readonly piAddons: readonly InlineExtension[];
+  private readonly sessionExtensions: PiSdkDriverOptions["sessionExtensions"];
   private readonly desktopExtensions: PiDesktopExtensionObserver | undefined;
   private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
@@ -326,6 +332,7 @@ export class SessionSupervisor {
       options.isBuiltinExtensionEnabled ?? (() => true),
     );
     this.piAddons = piAddonExtensions(options.openUrl ? { openUrl: options.openUrl } : {});
+    this.sessionExtensions = options.sessionExtensions;
     this.desktopExtensions = options.desktopExtensions;
     this.extensionFlagValuesForSession = options.extensionFlagValuesForSession;
     this.onTurnCaptureBoundary = options.onTurnCaptureBoundary;
@@ -356,6 +363,7 @@ export class SessionSupervisor {
         extensionFactories: [
           ...this.piAddons,
           ...this.builtinExtensions,
+          ...(this.sessionExtensions?.(workspace) ?? []),
           {
             name: "pi-gui-plan-limits",
             hidden: true,

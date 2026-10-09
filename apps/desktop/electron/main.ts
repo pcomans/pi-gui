@@ -83,6 +83,7 @@ import type {
 import type { SessionDriverEvent } from "@pi-gui/session-driver";
 import type { GenerateThreadTitleOptions } from "@pi-gui/pi-sdk-driver";
 import type { SessionRef, WorkspaceRef } from "@pi-gui/session-driver";
+import { SandboxOwner } from "./sandbox/sandbox-owner";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -98,6 +99,7 @@ const devReloadMarkersEnabled = process.env.PI_APP_DEV_RELOAD_MARKERS === "1";
 const TURN_CAPTURE_BACKSTOP_MS = 10_000;
 let store: DesktopAppStore;
 let extensionViewOwner: DesktopExtensionViewOwner | undefined;
+let sandboxOwner: SandboxOwner | undefined;
 let windowOwner: WindowOwner;
 const themeManager = new ThemeManager();
 let mainWindow: BrowserWindow | null = null;
@@ -999,6 +1001,13 @@ app
     protocol.handle(DESKTOP_EXTENSION_SCHEME, (request) =>
       extensionViews.assetResponse(request.url),
     );
+    // Tests opt in with PI_APP_SANDBOX=1, since their runners may have no QEMU.
+    const sandbox = new SandboxOwner({
+      userDataDir: configuredUserDataDir,
+      enabledByDefault: !appTestMode || process.env.PI_APP_SANDBOX === "1",
+    });
+    await sandbox.initialize();
+    sandboxOwner = sandbox;
     const driverOptions: NonNullable<
       ConstructorParameters<typeof DesktopAppStore>[0]["driverOptions"]
     > = {
@@ -1012,6 +1021,7 @@ app
           extensionViews.invalidateRuntime(target, generation),
       },
       openUrl: openMcpSignInUrl,
+      sessionExtensions: (workspace) => sandbox.sessionExtensions(workspace),
       builtinExtensions: [
         {
           name: "pi-gui-thread-orchestration",
@@ -1160,6 +1170,7 @@ app
         orchestration: store,
         scheduledTasks: store,
         settings: store,
+        sandbox,
         composerDraftFlush: composerDraftFlusher,
       },
       capabilities: {
@@ -1296,7 +1307,13 @@ app.on("before-quit", (event) => {
   // Renderers send their debounced drafts first so the store flush below includes them.
   const flush = composerDraftFlusher
     .flush(windowOwner.allWindows())
-    .then(() => Promise.all([quittingStore.flushPersistence(), extensionViewOwner?.dispose()]))
+    .then(() =>
+      Promise.all([
+        quittingStore.flushPersistence(),
+        extensionViewOwner?.dispose(),
+        sandboxOwner?.closeAll(),
+      ]),
+    )
     .catch((error: unknown) => {
       console.error("pi-gui: persistence flush failed during quit:", error);
     });

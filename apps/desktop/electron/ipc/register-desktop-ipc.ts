@@ -21,6 +21,7 @@ import type { NotificationPermissionService } from "../platform/notification-per
 import type { TerminalService } from "../platform/terminal-service";
 import type { ThemeManager } from "../platform/theme-manager";
 import type { WindowOwner } from "../windows/window-owner";
+import type { SandboxOwner } from "../sandbox/sandbox-owner";
 import type { PendingComposerDraftFlusher } from "../windows/pending-draft-flush";
 import { WorkbenchRequests, type WorkbenchOwner } from "./workbench-requests";
 import type { DesktopExtensionViewOwner } from "../extensions/extension-view-owner";
@@ -41,6 +42,7 @@ import {
   expectMcpServerScope,
   expectModelSettingsScopeMode,
   expectNewMcpServerInput,
+  expectSandboxSettingsUpdate,
   expectNavigateSessionTreeOptions,
   expectNonEmptyString,
   expectNotificationPreferences,
@@ -177,6 +179,7 @@ export interface DesktopIpcOwners {
   readonly orchestration: OrchestrationOwner;
   readonly scheduledTasks: ScheduledTaskOwner;
   readonly settings: SettingsOwner;
+  readonly sandbox: Pick<SandboxOwner, "snapshot" | "update" | "prepare">;
   readonly composerDraftFlush: Pick<PendingComposerDraftFlusher, "acknowledge" | "flush">;
 }
 
@@ -583,6 +586,18 @@ export function registerDesktopIpc({
         ),
       ),
   );
+  ipcMain.handle(desktopIpc.getSandboxSnapshot, (event) => {
+    windows.windowForSender(event.sender);
+    return owners.sandbox.snapshot();
+  });
+  ipcMain.handle(desktopIpc.updateSandboxSettings, (event, rawUpdate: unknown) => {
+    windows.windowForSender(event.sender);
+    return owners.sandbox.update(expectSandboxSettingsUpdate(rawUpdate));
+  });
+  ipcMain.handle(desktopIpc.prepareSandbox, (event) => {
+    windows.windowForSender(event.sender);
+    return owners.sandbox.prepare();
+  });
   ipcMain.handle(desktopIpc.listMcpServers, (event, rawWorkspaceId: unknown) => {
     windows.windowForSender(event.sender);
     return owners.settings.listMcpServers(expectNonEmptyString(rawWorkspaceId, "workspaceId"));
