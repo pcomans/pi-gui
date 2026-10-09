@@ -3459,7 +3459,18 @@ mark.thread-find-active {
   height: 13px;
 }
 
-.sandbox-badge--off,
+.sandbox-badge {
+  cursor: default;
+}
+
+.sandbox-badge--off {
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning-ink, var(--warning));
+}
+
 .sandbox-badge--failed {
-  color: var(--warning);
+  border-color: var(--danger-tint-border);
+  background: var(--danger-tint-bg);
+  color: var(--error);
 }

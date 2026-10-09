@@ -73,7 +73,7 @@ export function SettingsSandboxSection() {
     <>
       <SettingsGroup
         title="Tool sandbox"
-        description="pi's read, write, edit and bash tools and ! commands run in a Linux virtual machine that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
+        description="pi's read, write, edit and bash tools run in a Linux virtual machine that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
       >
         {error ? (
           <div className="settings-row">
@@ -200,7 +200,7 @@ function SandboxRepoGroup({
           <input
             aria-label={`Host for ${baseName(repo.repoPath)}`}
             className="settings-text-input"
-            placeholder="host, e.g. registry.npmjs.org or *.github.com"
+            placeholder="e.g. *.npmjs.org"
             value={draftHost}
             onChange={(event) => setDraftHost(event.currentTarget.value)}
           />
@@ -231,6 +231,7 @@ function SandboxRepoGroup({
         ) : null}
         {repo.hosts.map((entry) => (
           <SandboxHostRow
+            allowlist={repo.effectiveMode === "allowlist"}
             disabled={disabled}
             entry={entry}
             key={entry.host}
@@ -240,6 +241,7 @@ function SandboxRepoGroup({
         ))}
         {ruled.map((host) => (
           <SandboxHostRow
+            allowlist={repo.effectiveMode === "allowlist"}
             disabled={disabled}
             entry={undefined}
             host={host}
@@ -257,16 +259,25 @@ function SandboxHostRow({
   entry,
   host = entry?.host ?? "",
   rule,
+  allowlist,
   disabled,
   onRule,
 }: {
+  readonly allowlist: boolean;
   readonly entry: SandboxHostLogEntry | undefined;
   readonly host?: string;
   readonly rule: SandboxHostRule | undefined;
   readonly disabled: boolean;
   readonly onRule: (rule: SandboxHostRule | null) => void;
 }) {
-  const ruleText = rule === "allow" ? "Allowed by you" : rule === "block" ? "Blocked by you" : "";
+  const ruleText =
+    rule === "allow"
+      ? "Allowed by you"
+      : rule === "block"
+        ? "Blocked by you"
+        : allowlist
+          ? "Not on the allowlist"
+          : "";
   const traffic = entry
     ? [
         entry.allowedCount > 0 ? `${entry.allowedCount} allowed` : "",
@@ -304,14 +315,16 @@ function SandboxHostRow({
             >
               Allow
             </button>
-            <button
-              className="button button--secondary"
-              disabled={disabled}
-              type="button"
-              onClick={() => onRule("block")}
-            >
-              Block
-            </button>
+            {allowlist ? null : (
+              <button
+                className="button button--secondary"
+                disabled={disabled}
+                type="button"
+                onClick={() => onRule("block")}
+              >
+                Block
+              </button>
+            )}
           </>
         )}
       </div>
@@ -344,7 +357,9 @@ function sessionSummary(snapshot: SandboxSnapshot): string {
   const parts = [
     `${snapshot.sessions.length} open ${snapshot.sessions.length === 1 ? "thread" : "threads"}`,
     `${running} running`,
-    ...(failed.length > 0 ? [`${failed.length} failed: ${failed[0]?.message ?? ""}`] : []),
+    ...(failed.length > 0
+      ? [`${failed.length} failed: ${(failed[0]?.message ?? "").replace(/\.\s*$/, "")}`]
+      : []),
   ];
   return `${parts.join(" · ")}. Idle sandboxes stop after 10 minutes and restart on the next tool call.`;
 }

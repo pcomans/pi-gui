@@ -7,7 +7,7 @@ export function SandboxBadge({ status }: { readonly status: string | undefined }
     ? "failed"
     : status === "Sandbox: off"
       ? "off"
-      : status === "Sandbox: starting"
+      : status.startsWith("Sandbox: starting")
         ? "starting"
         : "on";
   const label = {
@@ -21,7 +21,9 @@ export function SandboxBadge({ status }: { readonly status: string | undefined }
       ? "Tools run directly on this Mac. Turn the sandbox on in Settings > Sandbox."
       : state === "failed"
         ? `${status}\nTools do not run until the sandbox works. See Settings > Sandbox.`
-        : "Tools run in a Linux VM that can only see this thread's checkout.";
+        : state === "starting" && status.length > "Sandbox: starting".length
+          ? status.slice("Sandbox: starting: ".length)
+          : "Tools run in a Linux VM that can only see this thread's checkout.";
   return (
     <span
       className={`model-selector__badge sandbox-badge sandbox-badge--${state}`}
