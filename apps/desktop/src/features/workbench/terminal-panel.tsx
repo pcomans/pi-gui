@@ -12,6 +12,7 @@ import type {
   TerminalSessionSnapshot,
   TerminalSize,
 } from "../../../contracts/ipc";
+import { terminalSandboxNotice } from "../../../contracts/sandbox";
 import { appendTerminalReplay } from "../../../contracts/terminal-model";
 import { getActiveTheme, useActiveTheme } from "../../ui/active-theme";
 import { terminalThemeFor } from "./terminal-theme";
@@ -19,11 +20,14 @@ import { terminalThemeFor } from "./terminal-theme";
 interface TerminalPanelProps {
   readonly workspace: WorkspaceRecord;
   readonly sessionId: string;
+  /** The thread's tools run in a sandbox; this terminal still runs on the host. */
+  readonly sandboxed: boolean;
   readonly onHide: () => void;
 }
 
-export function TerminalPanel({ workspace, sessionId, onHide }: TerminalPanelProps) {
+export function TerminalPanel({ workspace, sessionId, sandboxed, onHide }: TerminalPanelProps) {
   const api = window.piApp;
+  const sandboxNotice = terminalSandboxNotice(sandboxed, api?.platform ?? "");
   const panelRef = useRef<HTMLElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -364,6 +368,17 @@ export function TerminalPanel({ workspace, sessionId, onHide }: TerminalPanelPro
             </div>
           ))}
         </div>
+        {sandboxNotice ? (
+          <span
+            className="terminal-panel__sandbox-notice"
+            role="note"
+            aria-label={sandboxNotice.detail}
+            title={sandboxNotice.detail}
+            data-testid="terminal-sandbox-notice"
+          >
+            {sandboxNotice.label}
+          </span>
+        ) : null}
         <div className="terminal-panel__actions">
           <button
             type="button"

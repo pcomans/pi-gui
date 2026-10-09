@@ -21,7 +21,7 @@ Each item lists a proposed default; confirm or change it before implementation.
 | Q1  | Where do network rules live: global, per repository, or per thread?                                           | Per repository, inheriting a global default                             |
 | Q2  | In Allowlist mode, should an unknown host pause the request and ask live, or block and offer one-click Allow? | Block + one-click Allow                                                 |
 | Q3  | Should threads in the main checkout (not a worktree) also be sandboxed?                                       | Yes, every thread by default                                            |
-| Q4  | Does the integrated terminal for a sandboxed thread open in the sandbox or on the host?                       | Host, clearly labeled as unsandboxed                                    |
+| Q4  | Does the integrated terminal for a sandboxed thread open in the sandbox or on the host?                       | Implemented: host, clearly labeled as unsandboxed                       |
 | Q5  | Is there a per-thread "run unsandboxed" escape hatch, a per-call host approval, or neither?                   | Per-thread toggle with a persistent warning; no per-call approval in v1 |
 | Q6  | Do changes outside the workspace (e.g. `apt-get install`) survive a sandbox restart?                          | Decided: yes, each thread's sandbox keeps its state until it is removed |
 

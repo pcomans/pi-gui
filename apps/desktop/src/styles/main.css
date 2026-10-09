@@ -706,6 +706,19 @@
   background: var(--status-error);
 }
 
+/* Sandboxed thread: the terminal is still a host shell. Quiet, and the first thing to truncate. */
+.terminal-panel__sandbox-notice {
+  margin-left: auto;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
 .terminal-panel__actions {
   display: flex;
   align-items: center;

@@ -21,6 +21,22 @@ export function toolRunLocation(toolName: string, sandboxed: boolean): ToolRunLo
   return SANDBOXED_TOOL_NAMES.has(toolName) ? "sandbox" : "host";
 }
 
+/**
+ * What the integrated terminal says in a sandboxed thread: it is a shell on the host, not in the
+ * thread's sandbox. Undefined when the thread is not sandboxed, since there is nothing to contrast.
+ */
+export function terminalSandboxNotice(
+  sandboxed: boolean,
+  platform: string,
+): { readonly label: string; readonly detail: string } | undefined {
+  if (!sandboxed) return undefined;
+  const machine = platform === "darwin" ? "this Mac" : "this computer";
+  return {
+    label: `Runs on ${machine}, outside the sandbox`,
+    detail: `This terminal is not sandboxed. It runs on ${machine}, outside the thread's sandbox.`,
+  };
+}
+
 /** Whether a sandboxed thread may reach any host, or only hosts the person allowed. */
 export type SandboxNetworkMode = "allow-all" | "allowlist";
 export type SandboxHostRule = "allow" | "block";

@@ -319,6 +319,7 @@ export default function App() {
   const sandboxStatus = selectedExtensionUi?.statuses.find(
     (status) => status.key === SANDBOX_STATUS_KEY,
   )?.text;
+  const sandboxed = isSandboxedStatus(sandboxStatus);
   const selectedWorkspaceCommandCompatibility = selectedWorkspace
     ? (snapshot?.extensionCommandCompatibilityByWorkspace[selectedWorkspace.id] ?? [])
     : [];
@@ -1184,7 +1185,7 @@ export default function App() {
                     onOpenWorkspaceFileLine={handleOpenWorkspaceFileLine}
                     onExtensionAction={runExtensionCardAction}
                     extensionToolLabels={extensionToolLabels}
-                    sandboxed={isSandboxedStatus(sandboxStatus)}
+                    sandboxed={sandboxed}
                     workspacePath={selectedWorkspace.path}
                     onForkFromMessage={
                       selectedSession.status === "running" ? undefined : openForkModal
@@ -1411,6 +1412,7 @@ export default function App() {
                     key={selectedSessionKey}
                     workspace={selectedWorkspace}
                     sessionId={selectedSession.id}
+                    sandboxed={sandboxed}
                     onHide={() => workbench.closeTool("terminal")}
                   />
                 ),
