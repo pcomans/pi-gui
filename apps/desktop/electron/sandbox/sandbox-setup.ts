@@ -71,8 +71,9 @@ export function sandboxSetupScript(config: ProjectSandboxConfig | undefined): st
     ...(config && config.packages.length > 0
       ? [
           "export DEBIAN_FRONTEND=noninteractive",
-          "apt-get update -qq",
-          `apt-get install -y -qq ${config.packages.join(" ")}`,
+          // The image's own apt jobs can hold the lock right after the sandbox starts.
+          "apt-get -o DPkg::Lock::Timeout=300 update -qq",
+          `apt-get -o DPkg::Lock::Timeout=300 install -y -qq ${config.packages.join(" ")}`,
         ]
       : []),
     ...(config?.setup ? [config.setup] : []),

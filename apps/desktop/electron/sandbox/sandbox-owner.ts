@@ -19,6 +19,7 @@ import {
   sbxInstallHint,
   sbxStatus,
   stopSandbox,
+  threadPrefix,
   type SbxStatus,
 } from "./sandbox-sbx";
 import { SandboxSession, type SandboxSessionRef } from "./sandbox-session";
@@ -50,6 +51,7 @@ export class SandboxOwner {
   >();
   /** Last cumulative count sbx reported per sandbox, host and verdict. */
   private readonly loggedCounts = new Map<string, number>();
+  private readonly baselined = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private status: { readonly value: SbxStatus; readonly at: number } | undefined;
   private logTimer: ReturnType<typeof setInterval> | undefined;
@@ -94,12 +96,15 @@ export class SandboxOwner {
   async snapshot(): Promise<SandboxSnapshot> {
     const status = await this.sbxStatus(true);
     const ready = status.state === "ready" ? status.binary : undefined;
-    if (ready) await this.pollLog(ready);
+    const [listed, globalAllowsAll] = ready
+      ? await Promise.all([
+          listSandboxes(ready).catch(() => []),
+          globalPolicyAllowsAll(ready).catch(() => false),
+          this.pollLog(ready),
+        ])
+      : [[], false];
     const owned = this.store.ownedSandboxes();
-    const sandboxes = ready
-      ? (await listSandboxes(ready).catch(() => [])).filter((sandbox) => owned.has(sandbox.name))
-      : [];
-    const inUse = new Set([...this.sessions].map((session) => session.sandbox));
+    const sandboxes = listed.filter((sandbox) => owned.has(sandbox.name));
     return {
       supported: sandboxPlatformSupported(),
       enabled: this.enabled(),
@@ -108,11 +113,11 @@ export class SandboxOwner {
         ...("message" in status ? { message: status.message } : {}),
         installHint: sbxInstallHint(),
       },
-      globalAllowsAll: ready ? await globalPolicyAllowsAll(ready).catch(() => false) : false,
+      globalAllowsAll,
       sandboxes: {
         total: sandboxes.length,
         running: sandboxes.filter((sandbox) => sandbox.status === "running").length,
-        unused: sandboxes.filter((sandbox) => !inUse.has(sandbox.name)).length,
+        unused: sandboxes.filter((sandbox) => !this.inUse(sandbox.name)).length,
       },
       defaultNetworkMode: this.store.defaultNetworkMode,
       repos: this.store.repoRecords([...this.knownRepos]),
@@ -122,6 +127,13 @@ export class SandboxOwner {
         ...(session.message ? { message: session.message } : {}),
       })),
     };
+  }
+
+  /** Whether an open thread owns the sandbox, even if it has not used it since launch. */
+  private inUse(name: string): boolean {
+    return [...this.sessions].some((session) =>
+      name.startsWith(threadPrefix(`${session.ref.workspaceId}\0${session.ref.sessionId}`)),
+    );
   }
 
   async update(update: SandboxSettingsUpdate): Promise<SandboxSnapshot> {
@@ -212,6 +224,18 @@ export class SandboxOwner {
     );
     this.sessions.add(session);
     this.changed();
+    // Say so before the first tool call when sbx cannot run sandboxes at all.
+    this.sbxStatus(false)
+      .then((status) => {
+        if (status.state === "missing") {
+          session.unavailable(
+            `Docker Sandboxes (sbx) is not installed. Install it: ${sbxInstallHint()}.`,
+          );
+        } else if (status.state !== "ready") {
+          session.unavailable(status.message);
+        }
+      })
+      .catch(() => undefined);
     return session;
   }
 
@@ -230,12 +254,18 @@ export class SandboxOwner {
    */
   private async applyNetworkRules(sbx: string, sandbox: string, repoPath: string): Promise<void> {
     const rules = this.store.rulesFor(repoPath);
+    // Services on this Mac stay out of reach unless the person allowed one by name.
+    const hostOnly = HOST_ONLY_NAMES.filter((name) => !rules.allowedHosts.includes(name));
     const wanted = [
       ...(rules.mode === "allow-all"
         ? [{ decision: "allow" as const, resource: "**" }]
         : rules.allowedHosts.map((host) => ({ decision: "allow" as const, resource: host }))),
-      ...rules.blockedHosts.map((host) => ({ decision: "deny" as const, resource: host })),
+      ...[...new Set([...rules.blockedHosts, ...hostOnly])].map((host) => ({
+        decision: "deny" as const,
+        resource: host,
+      })),
     ];
+    await this.baselineLog(sbx, sandbox);
     const current = await sandboxNetworkRules(sbx, sandbox);
     const key = (decision: string, resource: string) => `${decision} ${resource}`;
     const wantedKeys = new Set(wanted.map((rule) => key(rule.decision, rule.resource)));
@@ -274,6 +304,20 @@ export class SandboxOwner {
       );
     }, LOG_POLL_MS);
     this.logTimer.unref?.();
+  }
+
+  /**
+   * sbx keeps a sandbox's counts across restarts and app launches; counting starts from what it
+   * reports when this run first uses the sandbox, so earlier traffic is not counted again.
+   */
+  private async baselineLog(sbx: string, sandbox: string): Promise<void> {
+    if (this.baselined.has(sandbox)) return;
+    this.baselined.add(sandbox);
+    for (const entry of await policyLog(sbx).catch(() => [])) {
+      if (entry.sandbox === sandbox) {
+        this.loggedCounts.set(`${entry.sandbox}\0${entry.host}\0${entry.allowed}`, entry.count);
+      }
+    }
   }
 
   /** Fold sbx's cumulative per-sandbox counts into the per-repository host log. */
@@ -316,11 +360,10 @@ export class SandboxOwner {
   private async removeUnusedSandboxes(): Promise<void> {
     const status = await this.sbxStatus(true);
     if (status.state !== "ready") return;
-    const inUse = new Set([...this.sessions].map((session) => session.sandbox));
     const owned = this.store.ownedSandboxes();
     const existing = new Set((await listSandboxes(status.binary)).map((sandbox) => sandbox.name));
     for (const name of [...owned]) {
-      if (inUse.has(name)) continue;
+      if (this.inUse(name)) continue;
       if (existing.has(name)) await removeSandbox(status.binary, name);
       this.sandboxThreads.delete(name);
       await this.store.setOwned(name, false);
@@ -331,3 +374,6 @@ export class SandboxOwner {
     for (const listener of this.listeners) listener();
   }
 }
+
+/** Names that reach this Mac from inside a sandbox. */
+const HOST_ONLY_NAMES = ["host.docker.internal", "localhost"];

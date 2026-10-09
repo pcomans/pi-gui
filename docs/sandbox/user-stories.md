@@ -6,10 +6,10 @@ Pi no longer runs with full access to my machine. Its built-in tools (`bash`, `r
 
 ## Decisions so far
 
-- **Backend:** [Gondolin](https://github.com/earendil-works/gondolin) local micro-VMs (QEMU). Pi itself stays on the host; only tool execution is routed into the VM.
-- **Ownership:** a pi-gui–owned Pi extension in `pi-sdk-driver`, modeled on Pi's Gondolin example but scoped per session (`ctx.cwd`, not `process.cwd()`), without host env forwarding.
-- **One VM per Pi session**, mounting that session's checkout (plus the main repository's `.git` for linked worktrees).
-- **Credentials** stay on the host. The VM sees placeholders that Gondolin swaps for real values only on requests to hosts allowed for that secret.
+- **Backend:** [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`, a Linux microVM per sandbox). Pi itself stays on the host; only tool execution is routed into the sandbox. (Gondolin was tried first and dropped: its file sharing made a pi-gui install take 15 minutes.)
+- **Ownership:** a hidden pi-gui extension, injected through the driver's `sessionExtensions`, scoped per session (`ctx.cwd`, not `process.cwd()`).
+- **One sandbox per thread**, mounting that thread's checkout at its own path (plus the main repository's `.git` for linked worktrees). It keeps its state until removed.
+- **Credentials** stay on the host. `sbx` keeps service secrets and fills them in at its proxy; the sandbox sees placeholders.
 - **Network:** the user chooses **Allow all** or **Allowlist**. Every outbound host is always recorded, and the user can block a host at any time.
 
 ## Open questions
@@ -21,9 +21,9 @@ Each item lists a proposed default; confirm or change it before implementation.
 | Q1  | Where do network rules live: global, per repository, or per thread?                                           | Per repository, inheriting a global default                             |
 | Q2  | In Allowlist mode, should an unknown host pause the request and ask live, or block and offer one-click Allow? | Block + one-click Allow                                                 |
 | Q3  | Should threads in the main checkout (not a worktree) also be sandboxed?                                       | Yes, every thread by default                                            |
-| Q4  | Does the integrated terminal for a sandboxed thread open in the VM or on the host?                            | Host, clearly labeled as unsandboxed                                    |
+| Q4  | Does the integrated terminal for a sandboxed thread open in the sandbox or on the host?                       | Host, clearly labeled as unsandboxed                                    |
 | Q5  | Is there a per-thread "run unsandboxed" escape hatch, a per-call host approval, or neither?                   | Per-thread toggle with a persistent warning; no per-call approval in v1 |
-| Q6  | Do changes outside the workspace (e.g. `apk add`) survive a VM restart?                                       | No; the VM is disposable and only the mounted checkout persists         |
+| Q6  | Do changes outside the workspace (e.g. `apt-get install`) survive a sandbox restart?                          | Decided: yes, each thread's sandbox keeps its state until it is removed |
 
 ## Story format
 
@@ -40,9 +40,9 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** the app to detect whether sandboxing is ready and tell me exactly what's missing, **so I can** get a sandboxed thread working without reading docs.
 
-- [ ] Without QEMU installed, the thread shows "Sandbox unavailable — QEMU not installed" with the install command.
-- [ ] After installing QEMU, **Retry** works without restarting the app.
-- [ ] On first use, the guest image download (~200 MB) shows progress.
+- [ ] Without `sbx` installed (or signed in), the chip shows "Sandbox failed" with the install or `sbx login` command, before the first tool call.
+- [ ] After installing and signing in, **Check again** in Settings and the next tool call work without restarting the app.
+- [ ] On first use, the chip says the sandbox is being created and that the first time downloads Docker's image.
 - [ ] A failed download (e.g. offline) shows an actionable error and a Retry.
 - [ ] None of the above states ever runs a tool on the host.
 
@@ -68,8 +68,8 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** to see at a glance whether a thread is sandboxed and whether its sandbox is starting, ready, or failed, **so I can** trust where the agent's commands are running.
 
-- [ ] The thread header shows Starting → Ready while a new VM boots.
-- [ ] Killing the VM process from outside shows Failed/Reconnecting within a few seconds.
+- [ ] The thread header shows Starting → Sandboxed while a new sandbox starts.
+- [ ] Stopping the sandbox from outside (`sbx stop`) does not break the thread: the next tool call starts it again.
 - [ ] An unsandboxed thread (if allowed, see Q5) shows a persistent, unmissable indicator.
 
 ### SBX-B2 — Agent edits show up normally · MVP
@@ -88,7 +88,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 - [ ] `ls ~`, `ls /Users`, `cat ~/.ssh/id_*` and `cat ~/.pi/agent/auth.json` fail or show nothing from the host.
 - [ ] `ls ..` from the workspace root does not list sibling repositories.
 - [ ] `read` and `write` to an absolute host path outside the checkout fail.
-- [ ] `rm -rf /` (or an equivalent destructive command) damages nothing on the host; the thread recovers with a fresh VM.
+- [ ] `rm -rf /` (or an equivalent destructive command) damages nothing on the host; the thread keeps working (or gets a fresh sandbox once the broken one is removed).
 
 ### SBX-B4 — Composer `!` commands are sandboxed · MVP
 
@@ -101,7 +101,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** to install dependencies, build and run tests inside the sandbox, **so I can** let the agent verify its own work.
 
-- [ ] `git`, `node`, `pnpm`, `rg` and `gh` are available in the guest image.
+- [ ] `git`, `node`, `pnpm`, `rg` and `gh` are available in the sandbox.
 - [ ] `pnpm install` and `pnpm test` succeed for a typical JS repository.
 - [ ] Linux-native dependencies installed in a worktree don't break the main checkout on the host (documented limitation if they do).
 
@@ -116,9 +116,9 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** sandboxed tools to feel about as fast as host tools, **so I can** use sandboxing all day.
 
-- [ ] A cold VM is ready in under N seconds (N set by the spike).
+- [ ] A new thread's first tool call finishes in about 10 s; a stopped sandbox restarts in about 4 s; warm calls take well under a second.
 - [ ] `read` and `grep` on a large repository are within X× of host speed (X set by the spike).
-- [ ] Typing in a sandboxed thread while its VM starts is never blocked.
+- [ ] Typing in a sandboxed thread while its sandbox starts is never blocked.
 
 ---
 
@@ -129,7 +129,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 **As a** pi-gui user, **I want** my configured models and provider logins to work unchanged, **so I can** chat without reconfiguring anything.
 
 - [ ] Every provider that works today works in a sandboxed thread.
-- [ ] No provider key or token is visible inside the VM (`env`, `cat ~/.pi/agent/*`, `grep -r sk- /`).
+- [ ] No provider key or token is visible inside the sandbox (`env`, `cat ~/.pi/agent/*`, `grep -r sk- /`).
 
 ### SBX-C2 — GitHub over HTTPS · MVP
 
@@ -138,15 +138,15 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 - [ ] `gh api user` returns my account.
 - [ ] `git push` over HTTPS succeeds.
 - [ ] `gh pr create` opens a PR.
-- [ ] `echo $GITHUB_TOKEN` (or `gh auth token`) prints a placeholder, not the real token.
+- [ ] `echo $GITHUB_TOKEN` (or `gh auth token`) prints a placeholder, not the token on the host.
 - [ ] `curl -H "Authorization: Bearer $GITHUB_TOKEN" https://example.com` sends the placeholder, not the token.
 
 ### SBX-C3 — GitHub over SSH · Later
 
-**As a** pi-gui user who uses SSH remotes, **I want** `git push` over SSH to use my host ssh-agent, **so I can** push without copying keys into the VM.
+**As a** pi-gui user who uses SSH remotes, **I want** `git push` over SSH to use my host ssh-agent, **so I can** push without copying keys into the sandbox.
 
 - [ ] `git push` to a `git@github.com:` remote succeeds.
-- [ ] No private key file exists in the VM.
+- [ ] No private key file exists in the sandbox.
 
 ### SBX-C4 — Commits are mine · MVP
 
@@ -203,7 +203,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** forking a conversation to create a new worktree with its own sandbox, **so I can** explore an alternative without touching the original.
 
-- [ ] Forking creates a new worktree and a new VM.
+- [ ] Forking creates a new worktree and a new sandbox.
 - [ ] The fork keeps the conversation history up to the fork point.
 - [ ] Changes in the fork do not appear in the parent's checkout, and vice versa.
 
@@ -219,30 +219,30 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** orchestrated child threads and scheduled tasks to run sandboxed like any other thread, **so I can** trust background work.
 
-- [ ] A child thread shows its own sandbox status and runs tools in a VM.
-- [ ] A scheduled task's run executes its tools in a VM.
+- [ ] A child thread shows its own sandbox status and runs tools in a sandbox.
+- [ ] A scheduled task's run executes its tools in a sandbox.
 
 ### SBX-E5 — Survives restart · MVP
 
 **As a** pi-gui user, **I want** to quit the app, reopen it and continue a sandboxed thread, **so I can** pick work back up.
 
-- [ ] After restarting, sending a prompt starts a fresh VM and the conversation continues.
+- [ ] After restarting, sending a prompt starts the thread's sandbox again and the conversation continues.
 - [ ] Uncommitted changes in the checkout are intact.
-- [ ] No VM processes are left running after quitting.
+- [ ] No pi-gui sandboxes are left running after quitting; after a crash, the next launch stops them.
 
 ### SBX-E6 — Archiving cleans up · MVP
 
 **As a** pi-gui user, **I want** archiving a thread to stop its sandbox, **so I can** avoid idle VMs using memory.
 
-- [ ] After archiving, the thread's VM process is gone.
-- [ ] Unarchiving and sending a prompt starts a new VM.
+- [ ] After archiving, the thread's sandbox is stopped.
+- [ ] Unarchiving and sending a prompt starts it again.
 - [ ] Worktree handling on archive is unchanged from today.
 
 ### SBX-E7 — Idle sandboxes don't pile up · Later
 
 **As a** pi-gui user with many threads, **I want** idle sandboxes to stop automatically and restart on demand, **so I can** keep many threads open without exhausting memory.
 
-- [ ] A thread idle past the timeout releases its VM.
+- [ ] A thread idle past the timeout stops its sandbox.
 - [ ] The next tool call restarts it transparently, showing Starting in the header.
 
 ---
@@ -292,7 +292,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** raw TCP connections (e.g. a remote Postgres) blocked unless I map them, **so I can** be sure nothing leaves the sandbox unseen.
 
-- [ ] `nc example.com 5432` fails with a clear error.
+- [ ] `nc example.com 5432` follows the same rules (a blocked host is refused). Known gap: raw TCP does not appear in `sbx`'s policy log, so it is not listed.
 - [ ] The attempt appears in the log.
 
 ---
@@ -303,16 +303,16 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** tools to fail rather than fall back to the host when the sandbox is unavailable, **so I can** trust that "sandboxed" always means sandboxed.
 
-- [ ] With the VM killed or QEMU removed, tool calls return a sandbox error; nothing runs on the host.
+- [ ] With `sbx` missing or signed out, tool calls return a sandbox error; nothing runs on the host.
 - [ ] Chatting (no tools) still works.
 - [ ] **Retry** in the status brings the sandbox back.
 
-### SBX-G2 — Recover from a VM crash · MVP
+### SBX-G2 — Recover from a sandbox crash · MVP
 
 **As a** pi-gui user, **I want** the sandbox to restart after a crash, **so I can** keep working without restarting the thread.
 
 - [ ] A tool call interrupted by a crash fails and is not replayed.
-- [ ] The next tool call runs in a fresh VM.
+- [ ] The next tool call reconnects to the sandbox.
 
 ### SBX-G3 — Deliberately run unsandboxed · Later (depends on Q5)
 
@@ -351,4 +351,4 @@ Fixtures needed to run these stories:
 - One Pi extension with a tool and a desktop view.
 - A global skill and a project skill.
 - A local dev server on the host (e.g. `python3 -m http.server 3000`).
-- A machine where QEMU can be uninstalled temporarily (for SBX-A1 and SBX-G1).
+- A launch with `sbx` off the PATH (`PI_APP_TEST_EXACT_PATH=1`) for SBX-A1 and SBX-G1.

@@ -190,12 +190,14 @@ try {
   });
 
   await test("git in one worktree's sandbox cannot prune another worktree", async () => {
+    // Created while this thread's sandbox runs: its metadata must be protected all the same.
     const other = join(root, "repo-other");
     git(mainRepo, "worktree", "add", "-q", "-b", "other", other);
-    // A new start reads the worktree list again and protects the new one.
-    await pi.emit("session_shutdown");
-    await pi.emit("session_start");
-    await run("bash", { command: "git worktree prune -v 2>&1; git gc --quiet 2>&1; true" });
+    const output = await run("bash", {
+      command:
+        "git worktree prune -v 2>&1; git gc --quiet 2>&1; echo x > own.txt && git add own.txt && git commit -qm own && echo OWN_COMMIT_OK",
+    });
+    assert.match(output, /OWN_COMMIT_OK/);
     assert.match(git(other, "status", "--short", "--branch"), /## other/);
   });
 
@@ -224,7 +226,14 @@ try {
     );
   });
 
-  await test("a dropped connection is reported and the next call reconnects", async () => {
+  await test("services on this Mac are out of reach unless allowed", async () => {
+    const output = await run("bash", {
+      command: "curl -sS -m 10 http://host.docker.internal:9/ 2>&1; true",
+    });
+    assert.match(output, /Blocked/i);
+  });
+
+  await test("a dropped connection is recovered on the next call", async () => {
     await run("bash", { command: "true" });
     // Kill this test's own `sbx exec` worker connection, as a crash of it would.
     const pids = execFileSync("pgrep", ["-P", String(process.pid), "-f", "sbx exec -i"], {
@@ -236,7 +245,6 @@ try {
     assert.ok(pids.length > 0, "the worker connection is a child of this process");
     for (const pid of pids) process.kill(Number(pid), "SIGKILL");
     await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.ok(pi.statuses.some((status) => status.startsWith("Sandbox: failed")));
     assert.match(await run("bash", { command: "echo recovered" }), /recovered/);
   });
 

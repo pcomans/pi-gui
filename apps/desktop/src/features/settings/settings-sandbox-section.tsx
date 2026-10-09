@@ -66,8 +66,15 @@ export function SettingsSandboxSection() {
   );
 
   if (!snapshot) {
-    return error ? <p className="settings-warning">{error}</p> : null;
+    return error ? (
+      <p className="settings-warning">{error}</p>
+    ) : (
+      <p className="settings-row__description">Checking Docker Sandboxes…</p>
+    );
   }
+  const allowlistInUse =
+    snapshot.defaultNetworkMode === "allowlist" ||
+    snapshot.repos.some((repo) => repo.effectiveMode === "allowlist");
 
   return (
     <>
@@ -122,7 +129,7 @@ export function SettingsSandboxSection() {
             onClick={() => {
               if (
                 window.confirm(
-                  `Remove ${snapshot.sandboxes.unused} sandboxes no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
+                  `Remove ${snapshot.sandboxes.unused} ${snapshot.sandboxes.unused === 1 ? "sandbox" : "sandboxes"} no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
                 )
               ) {
                 update({ kind: "remove-unused-sandboxes" });
@@ -138,13 +145,14 @@ export function SettingsSandboxSection() {
         title="Network"
         description="Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
       >
-        {snapshot.globalAllowsAll ? (
+        {snapshot.globalAllowsAll && allowlistInUse ? (
           <div className="settings-row">
             <span className="settings-row__description settings-warning">
-              Docker Sandboxes&apos; global policy allows every host, and its rules apply before
-              pi-gui&apos;s, so Allowlist mode cannot narrow it here: blocks still work. To use an
-              allowlist, make sbx deny by default (sbx policy reset, then sbx policy init deny-all);
-              that also affects your other sandboxes.
+              Allowlist mode cannot narrow access here: Docker Sandboxes&apos; global policy allows
+              every host, and it applies before pi-gui&apos;s per-sandbox rules. Blocking still
+              works. An allowlist takes effect once sbx&apos;s global policy denies by default (see
+              sbx policy --help); that changes all your Docker sandboxes, so pi-gui leaves it to
+              you.
             </span>
           </div>
         ) : null}
@@ -335,16 +343,14 @@ function SandboxHostRow({
             >
               Allow
             </button>
-            {allowlist ? null : (
-              <button
-                className="button button--secondary"
-                disabled={disabled}
-                type="button"
-                onClick={() => onRule("block")}
-              >
-                Block
-              </button>
-            )}
+            <button
+              className="button button--secondary"
+              disabled={disabled}
+              type="button"
+              onClick={() => onRule("block")}
+            >
+              Block
+            </button>
           </>
         )}
       </div>

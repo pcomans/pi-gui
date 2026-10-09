@@ -53,9 +53,10 @@ Real credentials never enter the sandbox. `sbx` keeps service secrets on the hos
 
 - **Allow all** adds an allow-everything rule to the sandbox; **Allowlist** adds one allow rule per listed host.
 - Each blocked host is a deny rule, which `sbx` applies over any allow, so blocking works in every mode and takes effect on the next request.
+- Services on this Mac (`host.docker.internal`, `localhost`) are denied unless the person allows that name.
 - `sbx`'s global policy applies to all sandboxes. When it allows every host (its `allow-all` default), an allowlist cannot narrow it; Settings says so. Making `sbx` deny by default also affects sandboxes outside pi-gui, so pi-gui does not change it.
 
-pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a per-repository host log (host names, counts, times and the last thread; never URLs or contents) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists it with Allow/Block buttons.
+pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a per-repository host log (host names, counts, times and the last thread; never URLs or contents) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists it with Allow/Block buttons. Counting starts from what `sbx` reports when a run first uses a sandbox, so a relaunch does not count earlier traffic again. Raw TCP connections follow the rules but do not appear in `sbx`'s log.
 
 ## Limitations
 

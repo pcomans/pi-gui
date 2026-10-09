@@ -100,6 +100,11 @@ export class SandboxSession {
     }
   }
 
+  /** sbx cannot run sandboxes at all; shown before the first tool call tries. */
+  unavailable(message: string): void {
+    if (this.state === "idle") this.setStatus("failed", message);
+  }
+
   /** Disconnect and stop the sandbox; the next call starts it again. */
   async stop(): Promise<void> {
     const sandbox = this.sandbox;
@@ -131,13 +136,13 @@ export class SandboxSession {
     this.setStatus("starting", "Starting the sandbox…");
     try {
       const sbx = await this.host.sbx();
-      // Read fresh each start: worktrees added since need protecting too.
       const identity = await repositoryIdentity(this.checkoutPath);
       const config = await readProjectSandboxConfig(this.checkoutPath);
       const mounts = [
         this.checkoutPath,
         ...(identity.externalGitDir ? [identity.externalGitDir] : []),
-        ...identity.otherWorktreeAdminDirs.map((dir) => `${dir}:ro`),
+        ...(identity.worktreesDir ? [`${identity.worktreesDir}:ro`] : []),
+        ...(identity.ownAdminDir ? [identity.ownAdminDir] : []),
         ...this.readonlyMounts.map((dir) => `${dir}:ro`),
       ];
       const threadKey = `${this.ref.workspaceId}\0${this.ref.sessionId}`;
@@ -152,9 +157,7 @@ export class SandboxSession {
       if (!existing.some((sandbox) => sandbox.name === name)) {
         this.setStatus(
           "starting",
-          existing.length === 0
-            ? "Creating the sandbox (the first one downloads Docker's image, a minute or two)…"
-            : "Creating the sandbox…",
+          "Creating the sandbox (the first time on this Mac it downloads Docker's image, which can take a few minutes)…",
         );
         await createSandbox(sbx, name, mounts);
       }
@@ -172,12 +175,12 @@ export class SandboxSession {
       const connection = { worker, env: await gitIdentityEnv(this.checkoutPath) };
       this.connection = connection;
       worker.closed
-        .then((error) => {
+        .then(() => {
           if (this.connection !== connection) return;
           this.connection = undefined;
-          if (!this.closed) {
-            this.setStatus("failed", `${error.message} The next tool call reconnects.`);
-          }
+          // Stopped from outside (sbx stop, Docker restarting): the next call reconnects, and a
+          // call it interrupted reports that itself.
+          if (!this.closed) this.setStatus("idle", undefined);
         })
         .catch(() => undefined);
       this.setStatus("ready", undefined);

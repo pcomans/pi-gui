@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdir, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -102,7 +102,16 @@ export async function removeSandbox(sbx: string, name: string): Promise<void> {
 
 /** Run a setup script as root, outside the worker (before it starts). */
 export async function runAsRoot(sbx: string, name: string, script: string): Promise<string> {
-  return run(sbx, ["exec", "-u", "root", name, "bash", "-c", script], { timeoutMs: 20 * 60_000 });
+  try {
+    return await run(sbx, ["exec", "-u", "root", name, "bash", "-c", script], {
+      timeoutMs: 20 * 60_000,
+    });
+  } catch (error) {
+    // execFile's message repeats the whole script; the output's end says what went wrong.
+    const record = error as { stdout?: string; stderr?: string };
+    const output = `${record.stdout ?? ""}\n${record.stderr ?? ""}`.trim().split("\n").slice(-8);
+    throw new Error(`Sandbox setup failed:\n${output.join("\n") || errorText(error)}`);
+  }
 }
 
 export interface SandboxNetworkRule {
@@ -229,10 +238,12 @@ export interface RepositoryIdentity {
   /** Shared git directory when it lies outside the checkout, as for linked worktrees. */
   readonly externalGitDir?: string;
   /**
-   * Other worktrees' admin folders (`<git dir>/worktrees/<name>`). The sandbox cannot see their
-   * checkouts, so git there would think them gone and `git worktree prune` would delete them.
+   * `<git dir>/worktrees`, mounted read-only: the sandbox cannot see other worktrees' checkouts,
+   * so git there would think them gone and `git worktree prune` would delete their metadata.
    */
-  readonly otherWorktreeAdminDirs: readonly string[];
+  readonly worktreesDir?: string;
+  /** This linked worktree's own admin folder inside it, which stays writable. */
+  readonly ownAdminDir?: string;
 }
 
 export async function repositoryIdentity(checkoutPath: string): Promise<RepositoryIdentity> {
@@ -248,19 +259,19 @@ export async function repositoryIdentity(checkoutPath: string): Promise<Reposito
     commonDir = await realpath(common!);
     gitDir = await realpath(own!);
   } catch {
-    return { repoPath: checkout, otherWorktreeAdminDirs: [] };
+    return { repoPath: checkout };
   }
   const repoPath = path.basename(commonDir) === ".git" ? path.dirname(commonDir) : commonDir;
   const insideCheckout = !path.relative(checkout, commonDir).startsWith("..");
-  const adminRoot = path.join(commonDir, "worktrees");
-  const otherWorktreeAdminDirs = (await readdir(adminRoot, { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(adminRoot, entry.name))
-    .filter((dir) => dir !== gitDir);
+  // Created up front (git would create it anyway) so the mount list, and with it the
+  // thread's sandbox, stays the same as worktrees come and go.
+  const worktreesDir = path.join(commonDir, "worktrees");
+  await mkdir(worktreesDir, { recursive: true });
   return {
     repoPath,
     ...(insideCheckout ? {} : { externalGitDir: commonDir }),
-    otherWorktreeAdminDirs,
+    worktreesDir,
+    ...(gitDir !== commonDir ? { ownAdminDir: gitDir } : {}),
   };
 }
 

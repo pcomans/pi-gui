@@ -694,10 +694,6 @@ test("SBX-F2/F3: a blocked host gets the policy response and every host is logge
 });
 
 test("SBX-F2: the host log survives a restart and counts each request once", async ({}, testInfo) => {
-  // Known product bug: the relaunched app folds sbx's cumulative per-sandbox counts in again
-  // (SandboxOwner.pollLog keeps what it already logged only in memory), so one more blocked
-  // request after a restart adds 2 instead of 1. Remove this line once that is fixed.
-  test.fail();
   test.setTimeout(FIRST_TOOL_CALL_TIMEOUT_MS + 3 * 60_000);
   const fixture = await createNetworkFixture("sandbox-network-restart", {
     "f2r-curl": { name: "bash", arguments: { command: "curl -sS https://example.com/ 2>&1" } },
