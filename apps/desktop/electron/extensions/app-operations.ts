@@ -1,9 +1,8 @@
 import { stat } from "node:fs/promises";
-import path from "node:path";
 import { parseExtensionUrl, type ExtensionAction, type SessionRef } from "@pi-gui/session-driver";
 import type { WorkspaceRecord } from "../../contracts/desktop-state";
 import type { ExtensionActionEffect } from "../../contracts/extension-actions";
-import { resolveExistingWorkspacePath } from "../platform/files/workspace-paths";
+import { resolveExistingWorkspaceEntry } from "../platform/files/workspace-paths";
 
 /**
  * The app operations an extension's UI can ask for, one per action type, each with its checks.
@@ -36,11 +35,11 @@ export async function runExtensionAction(
       // Only files inside the thread's checkout; the renderer opens the returned relative path.
       const workspacePath = host.workspacePath(target.workspaceId);
       if (!workspacePath) throw new Error("The thread's folder is unavailable");
-      const filePath = await resolveExistingWorkspacePath(workspacePath, action.path);
-      if (!(await stat(filePath)).isFile()) throw new Error(`${action.path} is not a file`);
+      const file = await resolveExistingWorkspaceEntry(workspacePath, action.path);
+      if (!(await stat(file.path)).isFile()) throw new Error(`${action.path} is not a file`);
       return {
         kind: "openFile",
-        path: path.relative(workspacePath, filePath),
+        path: file.relativePath,
         ...(action.line ? { line: action.line } : {}),
       };
     }

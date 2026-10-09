@@ -12,13 +12,25 @@ export async function resolveExistingWorkspacePath(
   workspacePath: string,
   filePath: string,
 ): Promise<string> {
+  return (await resolveExistingWorkspaceEntry(workspacePath, filePath)).path;
+}
+
+/**
+ * The real path of an existing entry inside the workspace, and that path relative to the
+ * workspace. The relative path is taken from the workspace's real path, so a folder opened
+ * through a symlink (macOS `/var` or `/tmp`, a linked `~/code`) still yields `src/a.ts`.
+ */
+export async function resolveExistingWorkspaceEntry(
+  workspacePath: string,
+  filePath: string,
+): Promise<{ readonly path: string; readonly relativePath: string }> {
   const resolved = resolveWorkspacePath(workspacePath, filePath);
   const [realWorkspaceRoot, realTarget] = await Promise.all([
     realpath(path.resolve(workspacePath)),
     realpath(resolved),
   ]);
   assertInsideWorkspace(realWorkspaceRoot, realTarget);
-  return realTarget;
+  return { path: realTarget, relativePath: path.relative(realWorkspaceRoot, realTarget) };
 }
 
 function assertInsideWorkspace(workspaceRoot: string, candidate: string): void {

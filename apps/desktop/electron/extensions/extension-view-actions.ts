@@ -1,10 +1,9 @@
 import { webContents, type BrowserWindow } from "electron";
 import { stat } from "node:fs/promises";
-import path from "node:path";
 import type { DesktopHostAction } from "@pi-gui/extension-ui/browser";
 import { desktopIpc } from "../../contracts/ipc";
 import type { DesktopAppStore } from "../application/app-store";
-import { resolveExistingWorkspacePath } from "../platform/files/workspace-paths";
+import { resolveExistingWorkspaceEntry } from "../platform/files/workspace-paths";
 import type { WindowOwner } from "../windows/window-owner";
 import { runExtensionAction, type AppOperationHost } from "./app-operations";
 import type {
@@ -85,17 +84,18 @@ export async function performExtensionViewHostAction(
   }
   const workspacePath = owners.store.getWorkspacePath(context.target.workspaceId);
   if (!workspacePath) throw new Error("The task checkout is unavailable");
-  const existingFile = async (requestedPath: string) => {
-    const filePath = await resolveExistingWorkspacePath(workspacePath, requestedPath);
-    if (!(await stat(filePath)).isFile()) throw new Error("The selected path is not a file");
-    return filePath;
+  // The checkout-relative path of a file inside the checkout.
+  const existingFileInCheckout = async (requestedPath: string) => {
+    const file = await resolveExistingWorkspaceEntry(workspacePath, requestedPath);
+    if (!(await stat(file.path)).isFile()) throw new Error("The selected path is not a file");
+    return file.relativePath;
   };
   if (action.type === "openFile") {
-    const filePath = await existingFile(action.path);
+    const relativePath = await existingFileInCheckout(action.path);
     requireCurrentTask();
     contents.send(desktopIpc.extensionViewOpenFile, {
       target: context.target,
-      path: path.relative(workspacePath, filePath),
+      path: relativePath,
       ...(action.line === undefined ? {} : { line: action.line }),
       ...(action.column === undefined ? {} : { column: action.column }),
     });
@@ -103,9 +103,8 @@ export async function performExtensionViewHostAction(
   }
   const files = await Promise.all(
     (action.files ?? []).map(async (file) => {
-      const filePath = await existingFile(file.path);
       return {
-        path: path.relative(workspacePath, filePath),
+        path: await existingFileInCheckout(file.path),
         line: file.line,
       };
     }),

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionRef } from "@pi-gui/session-driver";
@@ -18,12 +18,15 @@ const runExtensionAction = async (host: AppOperationHost, target: SessionRef, ra
 
 const target = { workspaceId: "workspace", sessionId: "session" };
 
-async function fixture() {
+async function fixture({ throughSymlink = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pi-gui-app-ops-"));
-  const checkout = join(root, "checkout");
-  await mkdir(join(checkout, "src"), { recursive: true });
-  await writeFile(join(checkout, "src", "a.ts"), "export const a = 1;\n");
+  const realCheckout = join(root, "checkout");
+  await mkdir(join(realCheckout, "src"), { recursive: true });
+  await writeFile(join(realCheckout, "src", "a.ts"), "export const a = 1;\n");
   await writeFile(join(root, "outside.ts"), "secret\n");
+  // A folder the user added through a symlink, like a linked ~/code or macOS's /var.
+  const checkout = throughSymlink ? join(root, "linked-checkout") : realCheckout;
+  if (throughSymlink) await symlink(realCheckout, checkout, "junction");
   const opened: string[] = [];
   const commands: string[] = [];
   const selected: SessionRef[] = [];
@@ -101,6 +104,16 @@ test("each button action runs its one operation", async () => {
   ).toBeUndefined();
   expect(opened).toEqual(["https://ci.example.com/runs/1"]);
   expect(commands).toEqual(["/ci rerun"]);
+});
+
+test("open file returns the checkout-relative path when the folder was added through a symlink", async () => {
+  const { host } = await fixture({ throughSymlink: true });
+  expect(
+    await runExtensionAction(host, target, { type: "openFile", label: "Open", path: "src/a.ts" }),
+  ).toEqual({ kind: "openFile", path: join("src", "a.ts") });
+  await expect(
+    runExtensionAction(host, target, { type: "openFile", label: "Escape", path: "../outside.ts" }),
+  ).rejects.toThrow();
 });
 
 test("open thread reaches only threads beside the card's own", async () => {
