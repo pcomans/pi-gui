@@ -39,6 +39,8 @@ The [sandbox owner](../../apps/desktop/electron/sandbox/sandbox-owner.ts) gives 
 }
 ```
 
+This repository's own [`.pi/sandbox.json`](../../.pi/sandbox.json) adds build tools for `node-pty` and the official Node 22 build, since Ubuntu's Node cannot run the `.mts` tests.
+
 `packages` are Ubuntu package names; `setup` is a shell script (or list of lines). Both run once as root when a thread's sandbox is created, with the project mounted. Every sandbox also gets pnpm, `safe.directory '*'` and `gc.worktreePruneExpire never`. The agent can install more itself with `sudo apt-get install`; that lasts for the thread's sandbox.
 
 ## Credentials

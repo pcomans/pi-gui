@@ -1,0 +1,4 @@
+{
+  "packages": ["build-essential"],
+  "setup": ["npm install --global --prefix /usr/local --silent n", "N_PREFIX=/usr/local n 22"]
+}
