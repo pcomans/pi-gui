@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -99,9 +99,16 @@ async function setUp(): Promise<void> {
   git(mainRepo, "config", "user.name", "Sandbox Tester");
   git(mainRepo, "config", "user.email", "sandbox@example.invalid");
   await writeFile(join(mainRepo, "README.md"), "hello\n");
+  await writeFile(join(mainRepo, ".gitignore"), "node_modules\n");
+  await writeFile(join(mainRepo, "package.json"), "{}\n");
+  await mkdir(join(mainRepo, "packages", "my pkg"), { recursive: true });
+  await writeFile(join(mainRepo, "packages", "my pkg", "package.json"), "{}\n");
   git(mainRepo, "add", ".");
   git(mainRepo, "commit", "-qm", "init");
   git(mainRepo, "worktree", "add", "-q", "-b", "feature", worktree);
+  // The host's own install, which the sandbox must neither see nor change.
+  await mkdir(join(worktree, "node_modules"));
+  await writeFile(join(worktree, "node_modules", "host.txt"), "host build\n");
 
   owner = new SandboxOwner({ userDataDir: join(root, "user-data"), enabledByDefault: true });
   await owner.initialize();
@@ -144,6 +151,23 @@ try {
       await run("read", { path: join(worktree, "from-host.txt") }),
       /written on the host/,
     );
+  });
+
+  await test("node_modules in the sandbox are its own, apart from the host's", async () => {
+    const output = await run("bash", {
+      command:
+        "ls -A node_modules; echo linux > node_modules/sandbox.txt && " +
+        "echo linux > 'packages/my pkg/node_modules/sandbox.txt' && " +
+        "rm -f node_modules/host.txt && cat node_modules/sandbox.txt",
+    });
+    assert.ok(!output.includes("host.txt"), output);
+    assert.match(output, /linux/);
+    assert.equal(
+      await readFile(join(worktree, "node_modules", "host.txt"), "utf8"),
+      "host build\n",
+    );
+    assert.deepEqual(await readdir(join(worktree, "node_modules")), ["host.txt"]);
+    assert.deepEqual(await readdir(join(worktree, "packages", "my pkg", "node_modules")), []);
   });
 
   await test("the rest of the host is out of reach", async () => {

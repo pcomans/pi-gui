@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { SandboxSessionState } from "../../contracts/sandbox";
 import {
@@ -11,8 +12,14 @@ import {
   sandboxName,
   stopSandbox,
   threadPrefix,
+  trackedPackageFiles,
 } from "./sandbox-sbx";
-import { readProjectSandboxConfig, sandboxSetupScript } from "./sandbox-setup";
+import {
+  nodeModulesDirs,
+  nodeModulesMountScript,
+  readProjectSandboxConfig,
+  sandboxSetupScript,
+} from "./sandbox-setup";
 import { SandboxWorker } from "./sandbox-worker";
 
 /** A sandbox nobody used for this long is stopped; the next tool call starts it again. */
@@ -167,6 +174,13 @@ export class SandboxSession {
       await this.host.applyNetworkRules(sbx, name, identity.repoPath);
       this.setStatus("starting", "Preparing the sandbox…");
       await runAsRoot(sbx, name, sandboxSetupScript(config));
+      // The sandbox's own node_modules, so its Linux builds never land in the host's.
+      const nodeModules = nodeModulesDirs(
+        this.checkoutPath,
+        await trackedPackageFiles(this.checkoutPath),
+      );
+      await Promise.all(nodeModules.map((dir) => mkdir(dir, { recursive: true })));
+      await runAsRoot(sbx, name, nodeModulesMountScript(nodeModules));
       const worker = await SandboxWorker.start(sbx, name, this.checkoutPath);
       if (this.closed) {
         worker.close();

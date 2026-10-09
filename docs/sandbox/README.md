@@ -29,6 +29,7 @@ The [sandbox owner](../../apps/desktop/electron/sandbox/sandbox-owner.ts) gives 
 - **Lifecycle.** A sandbox stops after 10 idle minutes, when its thread is archived or closed, and when the app quits; the next tool call starts it again. A launch stops pi-gui sandboxes a crash left running. If the connection drops, the call that hit it fails (it may have partly run and is never repeated) and the next call reconnects. Settings can remove sandboxes no open thread uses, to free disk space.
 - **Fail closed.** If the sandbox cannot start, tool calls fail with the reason. They never fall back to the host.
 - **Writes stay visible.** `write` and `edit` refuse paths outside the checkout (except `/tmp`), because those would land on the sandbox's own disk.
+- **Separate `node_modules`.** On every start (bind mounts end when a sandbox stops), [`SandboxSession`](../../apps/desktop/electron/sandbox/sandbox-session.ts) bind-mounts a folder on the sandbox's own disk (`/var/lib/pi-gui/node_modules/<hash of the path>`) over the checkout's `node_modules` and the one beside every git-tracked `package.json`, creating an empty `node_modules` on the host where none exists. The sandbox's Linux installs (native modules such as `node-pty`) stay inside it and persist with it, and the host's own `node_modules` stays untouched and hidden from the sandbox, which installs its own.
 
 ### `.pi/sandbox.json`
 
@@ -62,11 +63,11 @@ pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a 
 ## Limitations
 
 - macOS and Linux only; `sbx` must be installed and signed in.
-- Packages installed into a checkout from the sandbox are Linux builds; prefer a worktree when native modules are involved, so the main checkout's own `node_modules` stays usable on the host.
+- Only `node_modules` folders are kept apart (see [How it works](#how-it-works)); other build output in the checkout, such as `dist` or caches, is shared with the host. `.pi/sandbox.json`'s `setup` runs before they are mounted, so it should not install into the checkout.
 - MCP servers and extension tools are not sandboxed.
 
 ## Tests
 
-- `pnpm test:desktop-unit` covers the settings store.
+- `pnpm test:desktop-unit` covers the settings store and which `node_modules` folders are mounted.
 - `pnpm --filter @pi-gui/desktop test:sandbox` drives the extension against real `sbx` sandboxes (needs `sbx` signed in); it removes only the sandboxes it created.
 - `apps/desktop/tests/core/sandbox.spec.ts` drives the built app with a scripted provider; it runs only with `PI_APP_SANDBOX_E2E=1` on a machine where `sbx` is ready.

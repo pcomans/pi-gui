@@ -87,3 +87,37 @@ export function sandboxSetupScript(config: ProjectSandboxConfig | undefined): st
     `touch ${marker}`,
   ].join("\n");
 }
+
+/**
+ * `node_modules` folders the sandbox keeps to itself: the checkout's own and one beside every
+ * git-tracked `package.json`, so Linux installs never replace the host's native builds.
+ * `trackedFiles` are paths relative to the checkout, as `git ls-files` prints them.
+ */
+export function nodeModulesDirs(checkoutPath: string, trackedFiles: readonly string[]): string[] {
+  const dirs = trackedFiles
+    .filter((file) => path.posix.basename(file) === "package.json")
+    .map((file) => path.posix.dirname(file))
+    .filter((dir) => !dir.split("/").includes("node_modules"));
+  return [...new Set(["", ...dirs.filter((dir) => dir !== ".")])]
+    .sort()
+    .map((dir) => path.join(checkoutPath, dir, "node_modules"));
+}
+
+/**
+ * Root script that bind-mounts a sandbox-local folder over each of `dirs` (which must exist).
+ * Mounts end when the sandbox stops, so this runs on every start; mounted folders are skipped.
+ */
+export function nodeModulesMountScript(dirs: readonly string[]): string {
+  return [
+    "set -eu",
+    ...dirs.map((dir) => {
+      const own = `/var/lib/pi-gui/node_modules/${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
+      const target = shellQuote(dir);
+      return `mountpoint -q ${target} || { mkdir -p ${own} && chown agent:agent ${own} && mount --bind ${own} ${target}; }`;
+    }),
+  ].join("\n");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}

@@ -262,6 +262,14 @@ export async function repositoryIdentity(checkoutPath: string): Promise<Reposito
   };
 }
 
+/** `package.json` files git tracks in a checkout, relative to it; none outside git. */
+export async function trackedPackageFiles(checkoutPath: string): Promise<string[]> {
+  const output = await run("git", ["ls-files", "-z", "--", "*package.json"], {
+    cwd: checkoutPath,
+  }).catch(() => "");
+  return output.split("\0").filter(Boolean);
+}
+
 /** The person's git name and email, so commits made in the sandbox are theirs. */
 export async function gitIdentityEnv(checkoutPath: string): Promise<Record<string, string>> {
   const read = (key: string) =>
