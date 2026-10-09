@@ -6,6 +6,7 @@ import {
   ModelIcon,
   PlugIcon,
   SettingsIcon,
+  ShieldIcon,
   SkillIcon,
   SunIcon,
 } from "../../ui/icons";
@@ -77,6 +78,15 @@ export const SETTINGS_SECTIONS = [
     keywords: ["default model", "reasoning", "thinking", "enabled models"],
     description: () => "Choose the default model and which models appear in pickers.",
     needsWorkspace: true,
+  },
+  {
+    id: "sandbox",
+    title: "Sandbox",
+    group: "Agent",
+    icon: <ShieldIcon />,
+    keywords: ["sandbox", "vm", "qemu", "gondolin", "network", "allowlist", "block", "hosts"],
+    description: () => "Run pi's tools in a virtual machine and control what it can reach.",
+    needsWorkspace: false,
   },
   {
     id: "mcp",

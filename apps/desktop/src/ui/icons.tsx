@@ -701,6 +701,26 @@ export function KeyboardIcon() {
   );
 }
 
+export function ShieldIcon() {
+  return (
+    <Icon>
+      <path
+        d="M10 3.4 15.4 5.4v4.2c0 3.3-2.3 5.9-5.4 7-3.1-1.1-5.4-3.7-5.4-7V5.4L10 3.4Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.35"
+      />
+      <path
+        d="m7.6 10.1 1.7 1.7 3.2-3.4"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.35"
+      />
+    </Icon>
+  );
+}
+
 export function PlugIcon() {
   return (
     <Icon>
