@@ -1,63 +1,68 @@
 # Tool sandbox
 
-pi-gui runs pi's built-in tools in a local Linux micro-VM, one per thread, so a model-generated command cannot read or change anything on the machine beyond the thread's checkout. Pi itself, model calls, MCP servers and other extensions keep running on the host. The acceptance stories are in [user-stories.md](user-stories.md).
+pi-gui runs pi's built-in tools in a [Docker Sandbox](https://docs.docker.com/ai/sandboxes/) (`sbx`, a Linux microVM), one per thread, so a model-generated command cannot read or change anything on the machine beyond the thread's checkout. Pi itself, model calls, MCP servers and other extensions keep running on the host. The acceptance stories are in [user-stories.md](user-stories.md).
+
+An earlier version used Gondolin micro-VMs. Its file sharing ran at about 1.5 MB/s for small files (a pi-gui `pnpm install` took 15 minutes against 107 seconds in `sbx`), and idle VMs on macOS could not resume, so pi-gui switched to `sbx`.
+
+## Requirements
+
+- macOS or Linux with Docker Sandboxes installed and signed in: `brew install --cask docker/tap/sbx`, then `sbx login`.
+- Settings > Sandbox shows whether `sbx` is ready. Until it is, sandboxed tools fail with the reason (they never run on the host); the sandbox can be turned off there.
 
 ## What runs where
 
-| Runs in the VM                                                              | Runs on the host                                 |
+| Runs in the sandbox                                                         | Runs on the host                                 |
 | --------------------------------------------------------------------------- | ------------------------------------------------ |
 | `read`, `write`, `edit`, `bash` tools                                       | Pi, model requests and provider credentials      |
 | `!` commands (pi's `user_bash`; pi-gui's composer does not send them today) | MCP servers and their tools                      |
 | Everything those commands start: git, pnpm, tests                           | Other extensions' tools, the integrated terminal |
 
-Pi's `grep`, `find` and `ls` tools are withdrawn in sandboxed threads (`exposure: "hidden"`), because pi runs ripgrep and fd on the host even when an extension supplies its own file operations. The model runs `rg`, `find` and `ls` through `bash` instead, inside the VM.
+Pi's `grep`, `find` and `ls` tools are withdrawn in sandboxed threads (`exposure: "hidden"`), because pi runs ripgrep and fd on the host even when an extension supplies its own file operations. The model runs `rg`, `find` and `ls` through `bash` instead, inside the sandbox.
 
 ## How it works
 
 The [sandbox owner](../../apps/desktop/electron/sandbox/sandbox-owner.ts) gives every session a hidden extension through the driver's `sessionExtensions` option. Users cannot switch it off in the extensions list; Settings > Sandbox turns it off for threads opened afterwards.
 
-- **VM per thread.** [`SandboxSession`](../../apps/desktop/electron/sandbox/sandbox-session.ts) starts a [Gondolin](https://github.com/earendil-works/gondolin) VM on the first tool call and stops it after 10 idle minutes, when the thread closes, and when the app quits.
-- **Same paths.** The checkout is mounted at its host path, so file paths, `git` metadata and transcript paths need no translation. A linked worktree also mounts its repository's shared git directory, so commits work; skill folders pi announces are mounted read-only.
-- **Images.** The first VM in a profile builds a base image from Gondolin's Alpine image (git, ripgrep, gh, node, pnpm, curl). Later VMs resume from that checkpoint in tens of milliseconds. A project can add Alpine packages and setup commands in `.pi/sandbox.json`; each distinct file gets its own cached image. Images live in `<userData>/sandbox/images`.
-- **Fail closed.** If the VM cannot start (no QEMU, image build failed), tool calls fail with the reason. They never fall back to the host.
-- **Recovery.** A VM whose process died or broke is discarded: the call that hit it fails (it may have partly run and is never repeated) and the next call starts a new VM. QEMU processes are recorded in `<userData>/sandbox/vm-processes.json`, so after a crash the next launch stops any it left behind.
-- **Other worktrees.** A thread's VM cannot see other worktrees' checkouts, so their admin folders in the shared git directory are mounted read-only and `gc.worktreePruneExpire` is `never`; git inside one sandbox cannot prune another thread's worktree.
-- **Stop.** Stop and timeouts kill the command's whole process tree inside the VM. `write` and `edit` refuse paths outside the checkout (except `/tmp`), because those would land on the VM's throwaway disk.
+- **A sandbox per thread.** On a thread's first tool call, [`SandboxSession`](../../apps/desktop/electron/sandbox/sandbox-session.ts) creates an `sbx` shell sandbox named `pi-gui-<thread>-<mounts>` (the first one downloads Docker's image), applies the repository's network rules, runs the one-time setup, and starts a small worker inside it with `sbx exec -i`. The sandbox keeps its state (installed packages) between calls and app launches.
+- **Same paths.** `sbx` mounts the checkout at its host path, so file paths, `git` metadata and transcript paths need no translation. A linked worktree also mounts its repository's shared git directory; other worktrees' admin folders and pi's skill folders are mounted read-only.
+- **The worker.** [`sandbox-worker.ts`](../../apps/desktop/electron/sandbox/sandbox-worker.ts) answers JSON lines over the `sbx exec` connection: commands (each in its own process group, so Stop kills everything they started) and file reads and writes. One connection per thread avoids `sbx exec`'s half-second start per tool call.
+- **Lifecycle.** A sandbox stops after 10 idle minutes, when its thread is archived or closed, and when the app quits; the next tool call starts it again. A launch stops pi-gui sandboxes a crash left running. If the connection drops, the call that hit it fails (it may have partly run and is never repeated) and the next call reconnects. Settings can remove sandboxes no open thread uses, to free disk space.
+- **Fail closed.** If the sandbox cannot start, tool calls fail with the reason. They never fall back to the host.
+- **Writes stay visible.** `write` and `edit` refuse paths outside the checkout (except `/tmp`), because those would land on the sandbox's own disk.
 
 ### `.pi/sandbox.json`
 
 ```json
 {
-  "packages": ["python3", "make", "g++"],
+  "packages": ["build-essential", "python3"],
   "setup": "pip install --break-system-packages uv"
 }
 ```
 
-`packages` are Alpine package names; `setup` is a shell script (or list of lines) run once as root while the image is built, without the project mounted. Changes in the guest outside the checkout (for example `apk add` in a thread) last until that thread's VM stops.
+`packages` are Ubuntu package names; `setup` is a shell script (or list of lines). Both run once as root when a thread's sandbox is created, with the project mounted. Every sandbox also gets pnpm, `safe.directory '*'` and `gc.worktreePruneExpire never`. The agent can install more itself with `sudo apt-get install`; that lasts for the thread's sandbox.
 
 ## Credentials
 
-Real credentials never enter the VM. The host's `gh auth token`, when available, is registered with Gondolin as `GITHUB_TOKEN` and `GH_TOKEN`; the VM sees a placeholder, and Gondolin substitutes the real value only in requests to GitHub hosts. The base image's git credential helper sends that placeholder for HTTPS GitHub remotes. Commits use the host's `user.name` and `user.email` for the checkout.
+Real credentials never enter the sandbox. `sbx` keeps service secrets on the host (`sbx secret set github`, for example) and its proxy fills them in for requests; the sandbox sees placeholders such as `GH_TOKEN`. Commits use the host's `user.name` and `user.email` for the checkout.
 
 ## Network
 
-All guest HTTP(S) traffic passes through Gondolin's host-side proxy. For each request the owner decides by the repository (a worktree uses its main checkout's rules):
+`sbx`'s proxy enforces each sandbox's rules, which pi-gui keeps in step with the repository's settings (a worktree uses its main checkout's rules):
 
-1. A blocked host is refused.
-2. In Allowlist mode, a host not on the allowlist is refused.
-3. Otherwise the request goes through.
+- **Allow all** adds an allow-everything rule to the sandbox; **Allowlist** adds one allow rule per listed host.
+- Each blocked host is a deny rule, which `sbx` applies over any allow, so blocking works in every mode and takes effect on the next request.
+- `sbx`'s global policy applies to all sandboxes. When it allows every host (its `allow-all` default), an allowlist cannot narrow it; Settings says so. Making `sbx` deny by default also affects sandboxes outside pi-gui, so pi-gui does not change it.
 
-Refused requests get HTTP 403 with an explanation the model can report. Every decision is logged by host name with counts and the last thread (never URLs, headers or bodies) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists the log per repository and changes rules immediately, without restarting VMs. Private and loopback addresses are refused unless the person allows that exact host. Other TCP traffic (for example a database port) is not forwarded; the connection appears to open but nothing is sent, and it is not logged.
+pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a per-repository host log (host names, counts, times and the last thread; never URLs or contents) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists it with Allow/Block buttons.
 
 ## Limitations
 
-- macOS and Linux only; QEMU must be installed (`brew install qemu`).
-- File access goes through Gondolin's virtual file system: a ripgrep over a repository is roughly 20 times slower than on the host, and large installs take longer.
-- Packages installed in a checkout from the VM are Linux builds; prefer a worktree when native modules are involved.
+- macOS and Linux only; `sbx` must be installed and signed in.
+- Packages installed into a checkout from the sandbox are Linux builds; prefer a worktree when native modules are involved, so the main checkout's own `node_modules` stays usable on the host.
 - MCP servers and extension tools are not sandboxed.
 
 ## Tests
 
-- `pnpm test:desktop-unit` covers the settings store and network decisions.
-- `pnpm --filter @pi-gui/desktop test:sandbox-vm` drives the extension against real VMs (needs QEMU).
-- `apps/desktop/tests/core/sandbox.spec.ts` drives the built app with a scripted provider; it runs only with `PI_APP_SANDBOX_E2E=1` on a machine with QEMU.
+- `pnpm test:desktop-unit` covers the settings store.
+- `pnpm --filter @pi-gui/desktop test:sandbox` drives the extension against real `sbx` sandboxes (needs `sbx` signed in); it removes only the sandboxes it created.
+- `apps/desktop/tests/core/sandbox.spec.ts` drives the built app with a scripted provider; it runs only with `PI_APP_SANDBOX_E2E=1` on a machine where `sbx` is ready.

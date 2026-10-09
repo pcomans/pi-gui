@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   createBashToolDefinition,
@@ -17,8 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { SANDBOX_STATUS_KEY, type SandboxSessionState } from "../../contracts/sandbox";
-import type { GondolinVm } from "./sandbox-gondolin";
-import type { SandboxSession, SandboxSessionRef } from "./sandbox-session";
+import type { SandboxConnection, SandboxSession, SandboxSessionRef } from "./sandbox-session";
 
 export interface SandboxExtensionHost {
   enabled(): boolean;
@@ -38,7 +36,7 @@ const STATUS_TEXT: Record<SandboxSessionState, string> = {
 };
 
 /**
- * Routes pi's built-in read, write, edit and bash tools, and `!` commands, into the session's VM.
+ * Routes pi's built-in read, write, edit and bash tools, and `!` commands, into the session's Docker sandbox.
  * Pi itself, model calls, MCP servers and other extensions stay on the host.
  */
 export function createSandboxExtension(
@@ -54,15 +52,15 @@ export function createSandboxExtension(
     let session: SandboxSession | undefined;
     let context: ExtensionContext | undefined;
 
-    const use = <T>(work: (vm: GondolinVm) => Promise<T>): Promise<T> => {
+    const use = <T>(work: (connection: SandboxConnection) => Promise<T>): Promise<T> => {
       if (!session) {
         return Promise.reject(new Error("The sandbox is not attached to this thread yet."));
       }
       return session.use(work);
     };
 
-    // Anything outside the checkout lands on the VM's throwaway disk, so writing there would
-    // report success for a file the person never sees. Only the VM's scratch folders are allowed.
+    // Anything outside the checkout lands on the sandbox's own disk, so writing there would report
+    // success for a file the person never sees. Only the sandbox's /tmp is allowed besides.
     const writable = (file: string) => {
       if (WRITABLE_SCRATCH.some((root) => isWithin(root, file)) || isWithin(cwd, file)) return;
       throw new Error(
@@ -70,21 +68,22 @@ export function createSandboxExtension(
       );
     };
     const fileOps = {
-      readFile: (file: string) => use((vm) => vm.fs.readFile(file)),
+      readFile: (file: string) => use(({ worker }) => worker.readFile(file)),
       writeFile: (file: string, content: string) => {
         writable(file);
-        return use((vm) => vm.fs.writeFile(file, content, { encoding: "utf8" }));
+        return use(({ worker }) => worker.writeFile(file, content));
       },
-      access: (file: string) => use((vm) => vm.fs.access(file)),
+      access: (file: string) => use(({ worker }) => worker.access(file)),
       mkdir: (dir: string) => {
         writable(dir);
-        return use((vm) => vm.fs.mkdir(dir, { recursive: true }));
+        return use(({ worker }) => worker.mkdir(dir));
       },
     };
     const bashOps: BashOperations = {
       exec: (command, commandCwd, { onData, signal, timeout }) =>
-        use(async (vm) => {
+        use(async ({ worker, env }) => {
           if (signal?.aborted) throw new Error("aborted");
+          // The worker runs each command in its own process group and kills the whole group.
           const controller = new AbortController();
           const abort = () => controller.abort();
           signal?.addEventListener("abort", abort, { once: true });
@@ -96,29 +95,16 @@ export function createSandboxExtension(
                   controller.abort();
                 }, timeout * 1000)
               : undefined;
-          // Aborting Gondolin's exec leaves the command running, so record the shell's pid and
-          // kill its process tree on Stop or timeout.
-          const pidFile = `/tmp/pi-gui-exec-${randomUUID()}.pid`;
           try {
-            const proc = vm.exec(["/bin/bash", "-c", RUN_RECORDING_PID, pidFile, command], {
+            const result = await worker.exec(["/bin/bash", "-c", command], {
               cwd: commandCwd,
+              env,
+              onData,
               signal: controller.signal,
-              stdout: "pipe",
-              stderr: "pipe",
             });
-            for await (const chunk of proc.output()) onData(chunk.data);
-            return { exitCode: (await proc).exitCode };
-          } catch (error) {
-            if (signal?.aborted || timedOut) {
-              await vm
-                .exec(["/bin/sh", "-c", KILL_RECORDED_TREE, pidFile], {
-                  signal: AbortSignal.timeout(5_000),
-                })
-                .catch(() => undefined);
-            }
             if (signal?.aborted) throw new Error("aborted");
             if (timedOut) throw new Error(`timeout:${timeout}`);
-            throw error;
+            return result;
           } finally {
             if (timer) clearTimeout(timer);
             signal?.removeEventListener("abort", abort);
@@ -166,16 +152,16 @@ export function createSandboxExtension(
     });
 
     pi.registerCommand("sandbox", {
-      description: "Show this thread's sandbox status, or restart it with /sandbox restart",
+      description: "Show this thread's sandbox status, or stop it with /sandbox restart",
       handler: async (args, ctx) => {
         if (!session) return;
         if (args.trim() === "restart") {
-          await session.restart();
-          ctx.ui.notify("The sandbox restarts with the next tool call.", "info");
+          await session.stop();
+          ctx.ui.notify("The sandbox stopped; it starts again with the next tool call.", "info");
           return;
         }
         ctx.ui.notify(
-          `${statusText(session.state, session.message)}\nMounted: ${session.checkoutPath}`,
+          `${statusText(session.state, session.message)}\nSandbox: ${session.sandbox ?? "not created yet"}\nMounted: ${session.checkoutPath}`,
           session.state === "failed" ? "error" : "info",
         );
       },
@@ -190,14 +176,9 @@ function statusText(state: SandboxSessionState, message: string | undefined): st
 }
 
 const WRITABLE_SCRATCH = ["/tmp"];
-/** `$0` is the pid file, `$1` the command; the pid is the command shell's parent. */
-const RUN_RECORDING_PID = 'echo $$ > "$0"; /bin/bash -c "$1"; s=$?; rm -f "$0"; exit $s';
-const KILL_RECORDED_TREE =
-  'p=$(cat "$0" 2>/dev/null) || exit 0; k() { for c in $(pgrep -P "$1"); do k "$c"; done; kill -9 "$1" 2>/dev/null; }; k "$p"; rm -f "$0"';
-
 function isWithin(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-const SANDBOX_PROMPT = `Tool sandbox: the read, write, edit and bash tools run inside a Linux virtual machine (Alpine). The current working directory is mounted at the same path, so file paths are unchanged, and changes there are visible to the user. The rest of the host machine (home directory, other projects, credentials) is not available. Git, ripgrep (rg), gh, node and pnpm are installed; install more with \`apk add\` (it lasts until the sandbox restarts). Use rg, find and ls through bash. Network access may be limited by the user's policy; a blocked request returns HTTP 403 with an explanation, which you should report instead of retrying. GitHub credentials are available to git and gh as placeholders the host fills in.`;
+const SANDBOX_PROMPT = `Tool sandbox: the read, write, edit and bash tools run inside this thread's own Docker sandbox (Ubuntu Linux, user "agent" with passwordless sudo). The current working directory is mounted at the same path, so file paths are unchanged, and changes there are visible to the user. The rest of the host machine (home directory, other projects, credentials) is not available. Git, ripgrep (rg), gh, node and pnpm are installed; install more with \`sudo apt-get install\` (it lasts for this thread's sandbox). Use rg, find and ls through bash. Network access may be limited by the user's policy; a blocked request fails with an explanation, which you should report instead of retrying. GitHub credentials are available to git and gh as placeholders the host fills in.`;

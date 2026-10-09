@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import type {
@@ -10,12 +8,20 @@ import type {
 } from "../../contracts/sandbox";
 import { createSandboxExtension } from "./sandbox-extension";
 import {
-  findQemu,
-  loadGondolin,
-  qemuInstallHint,
+  addNetworkRule,
+  globalPolicyAllowsAll,
+  listSandboxes,
+  policyLog,
+  removeNetworkRule,
+  removeSandbox,
+  sandboxNetworkRules,
   sandboxPlatformSupported,
-} from "./sandbox-gondolin";
-import { SandboxImages } from "./sandbox-images";
+  sbxInstallHint,
+  sbxStatus,
+  SANDBOX_NAME_PREFIX,
+  stopSandbox,
+  type SbxStatus,
+} from "./sandbox-sbx";
 import { SandboxSession, type SandboxSessionRef } from "./sandbox-session";
 import { SandboxSettingsStore } from "./sandbox-settings-store";
 
@@ -25,33 +31,42 @@ export interface SandboxOwnerOptions {
   readonly enabledByDefault: boolean;
 }
 
+/** sbx's own policy log is polled this often while sandboxes are open, for the host list. */
+const LOG_POLL_MS = 5_000;
+const STATUS_CACHE_MS = 30_000;
+
 /**
- * Owns pi-gui's tool sandbox: preferences and the network log, VM images, and the VM behind
- * each open session. Sessions get it through a hidden extension that users cannot switch off;
- * turning the sandbox off happens here, in Settings.
+ * Owns pi-gui's tool sandbox: preferences and the network log, and the Docker sandbox (sbx)
+ * behind each open session. Sessions get it through a hidden extension that users cannot
+ * switch off; turning the sandbox off happens here, in Settings.
  */
 export class SandboxOwner {
   private readonly store: SandboxSettingsStore;
-  private readonly images: SandboxImages;
   private readonly sessions = new Set<SandboxSession>();
   private readonly knownRepos = new Set<string>();
+  /** Sandbox name → the repository and thread it serves, for attributing sbx's log. */
+  private readonly sandboxThreads = new Map<
+    string,
+    { readonly repoPath: string; readonly ref: SandboxSessionRef }
+  >();
+  /** Last cumulative count sbx reported per sandbox, host and verdict. */
+  private readonly loggedCounts = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
-  private readonly vmPids = new Set<number>();
-  private qemuFound: boolean | undefined;
+  private status: { readonly value: SbxStatus; readonly at: number } | undefined;
+  private logTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly options: SandboxOwnerOptions) {
-    const directory = path.join(options.userDataDir, "sandbox");
-    this.store = new SandboxSettingsStore(directory);
-    this.images = new SandboxImages(path.join(directory, "images"), loadGondolin, () =>
-      this.changed(),
-    );
+    this.store = new SandboxSettingsStore(path.join(options.userDataDir, "sandbox"));
   }
 
   async initialize(): Promise<void> {
     await this.store.load();
-    this.qemuFound = await findQemu();
-    await stopOrphanedVms(await this.store.loadVmPids().catch(() => []));
-    await this.store.saveVmPids([]);
+    if (this.enabled()) {
+      // No thread uses a sandbox yet, so running pi-gui sandboxes were left by a crash.
+      this.stopLeftoverSandboxes().catch((error: unknown) =>
+        console.error("[sandbox] stop leftovers", error),
+      );
+    }
   }
 
   enabled(): boolean {
@@ -69,7 +84,7 @@ export class SandboxOwner {
             this.openSession(ref, checkoutPath, onStatus),
           closeSession: (session) => {
             this.sessions.delete(session);
-            session.close().catch((error: unknown) => console.error("[sandbox] close", error));
+            session.close(true).catch((error: unknown) => console.error("[sandbox] close", error));
             this.changed();
           },
         }),
@@ -78,12 +93,29 @@ export class SandboxOwner {
   }
 
   async snapshot(): Promise<SandboxSnapshot> {
-    this.qemuFound = await findQemu();
+    const status = await this.sbxStatus(true);
+    const ready = status.state === "ready" ? status.binary : undefined;
+    if (ready) await this.pollLog(ready);
+    const sandboxes = ready
+      ? (await listSandboxes(ready).catch(() => [])).filter((sandbox) =>
+          sandbox.name.startsWith(SANDBOX_NAME_PREFIX),
+        )
+      : [];
+    const inUse = new Set([...this.sessions].map((session) => session.sandbox));
     return {
       supported: sandboxPlatformSupported(),
       enabled: this.enabled(),
-      qemu: { found: this.qemuFound, installHint: qemuInstallHint() },
-      baseImage: this.images.baseState(),
+      backend: {
+        state: status.state,
+        ...("message" in status ? { message: status.message } : {}),
+        installHint: sbxInstallHint(),
+      },
+      globalAllowsAll: ready ? await globalPolicyAllowsAll(ready).catch(() => false) : false,
+      sandboxes: {
+        total: sandboxes.length,
+        running: sandboxes.filter((sandbox) => sandbox.status === "running").length,
+        unused: sandboxes.filter((sandbox) => !inUse.has(sandbox.name)).length,
+      },
       defaultNetworkMode: this.store.defaultNetworkMode,
       repos: this.store.repoRecords([...this.knownRepos]),
       sessions: [...this.sessions].map((session) => ({
@@ -95,26 +127,31 @@ export class SandboxOwner {
   }
 
   async update(update: SandboxSettingsUpdate): Promise<SandboxSnapshot> {
-    await this.store.update(update);
+    if (update.kind === "remove-unused-sandboxes") {
+      await this.removeUnusedSandboxes();
+    } else {
+      await this.store.update(update);
+      await this.reapplyNetworkRules(
+        update.kind === "host-rule" || update.kind === "repo-network-mode"
+          ? update.repoPath
+          : undefined,
+      );
+    }
     this.changed();
     return this.snapshot();
   }
 
-  /** Build the base image now (Settings' Prepare/Retry), instead of on the first tool call. */
+  /** Check sbx again (Settings' Check again button). */
   async prepare(): Promise<SandboxSnapshot> {
-    this.images.retry();
-    this.qemuFound = await findQemu();
-    if (this.qemuFound) {
-      void this.images.imageFor(undefined).catch(() => undefined);
-    }
+    this.status = undefined;
     return this.snapshot();
   }
 
-  /** Stop the VMs of archived threads; a restored thread starts a new one on its next call. */
+  /** Stop the sandboxes of archived threads; a restored thread starts its own on its next call. */
   stopArchived(isArchived: (ref: SandboxSessionRef) => boolean): void {
     for (const session of this.sessions) {
       if (session.state !== "idle" && isArchived(session.ref)) {
-        session.restart().catch((error: unknown) => console.error("[sandbox] stop", error));
+        session.stop().catch((error: unknown) => console.error("[sandbox] stop", error));
       }
     }
   }
@@ -125,9 +162,11 @@ export class SandboxOwner {
   }
 
   async closeAll(): Promise<void> {
+    if (this.logTimer) clearInterval(this.logTimer);
+    this.logTimer = undefined;
     const sessions = [...this.sessions];
     this.sessions.clear();
-    await Promise.all(sessions.map((session) => session.close()));
+    await Promise.all(sessions.map((session) => session.close(true)));
     await this.store.flush().catch((error: unknown) => console.error("[sandbox] flush", error));
   }
 
@@ -140,67 +179,151 @@ export class SandboxOwner {
       ref,
       checkoutPath,
       {
-        imageFor: async (config) => {
-          if (!this.qemuFound && !(this.qemuFound = await findQemu())) {
-            throw new Error(
-              `QEMU is not installed. Install it with \`${qemuInstallHint()}\`, or turn the sandbox off in Settings > Sandbox.`,
-            );
+        sbx: async () => {
+          const status = await this.sbxStatus(false);
+          if (status.state === "ready") return status.binary;
+          this.status = undefined;
+          throw new Error(
+            status.state === "missing"
+              ? `Docker Sandboxes (sbx) is not installed. Install it: ${sbxInstallHint()}. Or turn the sandbox off in Settings > Sandbox.`
+              : `${status.message} Or turn the sandbox off in Settings > Sandbox.`,
+          );
+        },
+        applyNetworkRules: (sbx, sandbox, repoPath) =>
+          this.applyNetworkRules(sbx, sandbox, repoPath),
+        noteSandbox: (sandbox, repoPath, sessionRef) => {
+          // A thread whose mounts changed moved to a new sandbox; its old one is gone.
+          for (const [name, thread] of this.sandboxThreads) {
+            if (
+              thread.ref.workspaceId === sessionRef.workspaceId &&
+              thread.ref.sessionId === sessionRef.sessionId
+            ) {
+              this.sandboxThreads.delete(name);
+            }
           }
-          return this.images.imageFor(config);
-        },
-        imageNeedsBuild: (config) => this.images.needsBuild(config),
-        network: {
-          check: (repoPath, host) => this.store.check(repoPath, host),
-          explicitlyAllowed: (repoPath, host) => this.store.explicitlyAllowed(repoPath, host),
-          record: (repoPath, host, allowed, sessionRef) =>
-            this.store.record(repoPath, host, allowed, sessionRef),
-        },
-        noteRepository: (repoPath) => {
-          if (this.knownRepos.has(repoPath)) return;
+          this.sandboxThreads.set(sandbox, { repoPath, ref: sessionRef });
           this.knownRepos.add(repoPath);
-          this.changed();
+          this.startLogPolling();
         },
         changed: () => this.changed(),
-        vmStarted: (pid) => this.trackVm(pid, true),
-        vmStopped: (pid) => this.trackVm(pid, false),
       },
       onStatus,
     );
     this.sessions.add(session);
-    void session.repository().catch(() => undefined);
     this.changed();
     return session;
   }
 
-  private trackVm(pid: number, running: boolean): void {
-    if (running) this.vmPids.add(pid);
-    else this.vmPids.delete(pid);
-    this.store
-      .saveVmPids([...this.vmPids])
-      .catch((error: unknown) => console.error("[sandbox] save vm pids", error));
+  private async sbxStatus(fresh: boolean): Promise<SbxStatus> {
+    if (!fresh && this.status?.value.state === "ready") return this.status.value;
+    if (this.status && Date.now() - this.status.at < STATUS_CACHE_MS && !fresh) {
+      return this.status.value;
+    }
+    this.status = { value: await sbxStatus(), at: Date.now() };
+    return this.status.value;
+  }
+
+  /**
+   * Make a sandbox's own rules match its repository: allow everything or the allowlist, and deny
+   * blocked hosts (sbx lets a deny win over any allow).
+   */
+  private async applyNetworkRules(sbx: string, sandbox: string, repoPath: string): Promise<void> {
+    const rules = this.store.rulesFor(repoPath);
+    const wanted = [
+      ...(rules.mode === "allow-all"
+        ? [{ decision: "allow" as const, resource: "**" }]
+        : rules.allowedHosts.map((host) => ({ decision: "allow" as const, resource: host }))),
+      ...rules.blockedHosts.map((host) => ({ decision: "deny" as const, resource: host })),
+    ];
+    const current = await sandboxNetworkRules(sbx, sandbox);
+    const key = (decision: string, resource: string) => `${decision} ${resource}`;
+    const wantedKeys = new Set(wanted.map((rule) => key(rule.decision, rule.resource)));
+    const currentKeys = new Set<string>();
+    for (const rule of current) {
+      const ruleKey = key(rule.decision, rule.resources.join(","));
+      if (wantedKeys.has(ruleKey) && !currentKeys.has(ruleKey)) currentKeys.add(ruleKey);
+      else await removeNetworkRule(sbx, sandbox, rule.id);
+    }
+    for (const rule of wanted) {
+      if (!currentKeys.has(key(rule.decision, rule.resource))) {
+        await addNetworkRule(sbx, sandbox, rule.decision, rule.resource);
+      }
+    }
+  }
+
+  private async reapplyNetworkRules(repoPath: string | undefined): Promise<void> {
+    const status = await this.sbxStatus(false);
+    if (status.state !== "ready") return;
+    for (const [sandbox, thread] of this.sandboxThreads) {
+      if (repoPath === undefined || thread.repoPath === repoPath) {
+        await this.applyNetworkRules(status.binary, sandbox, thread.repoPath).catch(
+          (error: unknown) => console.error("[sandbox] network rules", error),
+        );
+      }
+    }
+  }
+
+  private startLogPolling(): void {
+    this.logTimer ??= setInterval(() => {
+      if (this.sessions.size === 0) return;
+      const status = this.status?.value;
+      if (status?.state !== "ready") return;
+      this.pollLog(status.binary).catch((error: unknown) =>
+        console.error("[sandbox] policy log", error),
+      );
+    }, LOG_POLL_MS);
+    this.logTimer.unref?.();
+  }
+
+  /** Fold sbx's cumulative per-sandbox counts into the per-repository host log. */
+  private async pollLog(sbx: string): Promise<void> {
+    let changed = false;
+    for (const entry of await policyLog(sbx).catch(() => [])) {
+      const thread = this.sandboxThreads.get(entry.sandbox);
+      if (!thread) continue;
+      const countKey = `${entry.sandbox}\0${entry.host}\0${entry.allowed}`;
+      const previous = this.loggedCounts.get(countKey) ?? 0;
+      // A restarted sandbox counts from zero again.
+      const added = entry.count >= previous ? entry.count - previous : entry.count;
+      this.loggedCounts.set(countKey, entry.count);
+      if (added > 0) {
+        this.store.record(
+          thread.repoPath,
+          entry.host,
+          entry.allowed,
+          thread.ref,
+          added,
+          entry.lastSeenAt,
+        );
+        changed = true;
+      }
+    }
+    if (changed) this.changed();
+  }
+
+  private async stopLeftoverSandboxes(): Promise<void> {
+    const status = await this.sbxStatus(true);
+    if (status.state !== "ready") return;
+    for (const sandbox of await listSandboxes(status.binary).catch(() => [])) {
+      if (sandbox.name.startsWith(SANDBOX_NAME_PREFIX) && sandbox.status === "running") {
+        await stopSandbox(status.binary, sandbox.name).catch(() => undefined);
+      }
+    }
+  }
+
+  private async removeUnusedSandboxes(): Promise<void> {
+    const status = await this.sbxStatus(true);
+    if (status.state !== "ready") return;
+    const inUse = new Set([...this.sessions].map((session) => session.sandbox));
+    for (const sandbox of await listSandboxes(status.binary)) {
+      if (sandbox.name.startsWith(SANDBOX_NAME_PREFIX) && !inUse.has(sandbox.name)) {
+        await removeSandbox(status.binary, sandbox.name);
+        this.sandboxThreads.delete(sandbox.name);
+      }
+    }
   }
 
   private changed(): void {
     for (const listener of this.listeners) listener();
-  }
-}
-
-/**
- * Stop QEMU processes a previous run started and could not stop (a crash or force quit). Only
- * pids this app recorded, still QEMU and orphaned to init, are touched.
- */
-async function stopOrphanedVms(pids: readonly number[]): Promise<void> {
-  for (const pid of pids) {
-    const row = await promisify(execFile)("ps", ["-o", "ppid=,comm=", "-p", String(pid)])
-      .then(({ stdout }) => stdout.trim())
-      .catch(() => "");
-    const [ppid, command = ""] = row.split(/\s+/, 2);
-    if (ppid === "1" && command.includes("qemu-system")) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    }
   }
 }

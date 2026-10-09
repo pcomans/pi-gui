@@ -73,7 +73,7 @@ export function SettingsSandboxSection() {
     <>
       <SettingsGroup
         title="Tool sandbox"
-        description="pi's read, write, edit and bash tools run in a Linux virtual machine that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
+        description="pi's read, write, edit and bash tools run in each thread's own Docker sandbox (a Linux microVM) that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
       >
         {error ? (
           <div className="settings-row">
@@ -95,39 +95,59 @@ export function SettingsSandboxSection() {
             onChange={(enabled) => update({ kind: "enabled", enabled })}
           />
         </SettingsRow>
-        <SettingsRow
-          title="QEMU"
-          description={
-            snapshot.qemu.found
-              ? "Installed."
-              : `Not installed. Sandboxed tools fail until it is. Install it with: ${snapshot.qemu.installHint}`
-          }
-        />
-        <SettingsRow
-          title="Sandbox image"
-          description={imageDescription(snapshot.baseImage.state, snapshot.baseImage.error)}
-        >
-          {snapshot.baseImage.state === "missing" || snapshot.baseImage.state === "failed" ? (
+        <SettingsRow title="Docker Sandboxes" description={backendDescription(snapshot)}>
+          {snapshot.backend.state === "ready" ? null : (
             <button
               className="button button--secondary"
-              disabled={pending || !snapshot.qemu.found}
+              disabled={pending}
               type="button"
               onClick={() => {
                 const api = window.piApp;
                 if (api) run(() => api.prepareSandbox());
               }}
             >
-              {snapshot.baseImage.state === "failed" ? "Retry" : "Prepare now"}
+              Check again
             </button>
-          ) : null}
+          )}
         </SettingsRow>
-        <SettingsRow title="Running sandboxes" description={sessionSummary(snapshot)} />
+        <SettingsRow title="Threads" description={sessionSummary(snapshot)} />
+        <SettingsRow
+          title="Sandboxes"
+          description={`${snapshot.sandboxes.total} created by pi-gui, ${snapshot.sandboxes.running} running. Each thread keeps its own until it is removed; removing unused ones frees disk space, and a thread that needs one again gets a fresh sandbox.`}
+        >
+          <button
+            className="button button--secondary"
+            disabled={pending || snapshot.sandboxes.unused === 0}
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Remove ${snapshot.sandboxes.unused} sandboxes no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
+                )
+              ) {
+                update({ kind: "remove-unused-sandboxes" });
+              }
+            }}
+          >
+            Remove {snapshot.sandboxes.unused} unused
+          </button>
+        </SettingsRow>
       </SettingsGroup>
 
       <SettingsGroup
         title="Network"
         description="Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
       >
+        {snapshot.globalAllowsAll ? (
+          <div className="settings-row">
+            <span className="settings-row__description settings-warning">
+              Docker Sandboxes&apos; global policy allows every host, and its rules apply before
+              pi-gui&apos;s, so Allowlist mode cannot narrow it here: blocks still work. To use an
+              allowlist, make sbx deny by default (sbx policy reset, then sbx policy init deny-all);
+              that also affects your other sandboxes.
+            </span>
+          </div>
+        ) : null}
         <SettingsRow
           title="Default for repositories"
           description="Allowlist blocks any host you have not allowed."
@@ -338,16 +358,16 @@ function hostRule(repo: SandboxRepoNetworkRecord, host: string): SandboxHostRule
   return undefined;
 }
 
-function imageDescription(state: SandboxSnapshot["baseImage"]["state"], error?: string): string {
-  switch (state) {
+function backendDescription(snapshot: SandboxSnapshot): string {
+  switch (snapshot.backend.state) {
     case "ready":
-      return "Ready. Sandboxes start in well under a second.";
-    case "building":
-      return "Preparing the Linux image with git, ripgrep, gh, node and pnpm…";
-    case "failed":
-      return `Preparing the image failed: ${error ?? "unknown error"}`;
+      return "Ready. Each thread gets its own sandbox on its first tool call.";
     case "missing":
-      return "Not prepared yet. It is built on the first sandboxed tool call (about a minute), or now.";
+      return `Not installed; sandboxed tools fail until it is. Install it: ${snapshot.backend.installHint}.`;
+    case "signed-out":
+      return "Installed but not signed in; sandboxed tools fail until it is. Run sbx login in a terminal.";
+    case "unavailable":
+      return `Not answering: ${snapshot.backend.message ?? "unknown error"}`;
   }
 }
 
@@ -361,7 +381,7 @@ function sessionSummary(snapshot: SandboxSnapshot): string {
       ? [`${failed.length} failed: ${(failed[0]?.message ?? "").replace(/\.\s*$/, "")}`]
       : []),
   ];
-  return `${parts.join(" · ")}. Idle sandboxes stop after 10 minutes and restart on the next tool call.`;
+  return `${parts.join(" · ")}. Idle sandboxes stop after 10 minutes and start again on the next tool call.`;
 }
 
 function baseName(repoPath: string): string {

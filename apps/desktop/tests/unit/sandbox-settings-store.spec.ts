@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { SandboxSettingsStore } from "../../electron/sandbox/sandbox-settings-store";
-import { normalizeSandboxHost, sandboxHostMatches } from "../../contracts/sandbox";
+import { normalizeSandboxHost } from "../../contracts/sandbox";
 
 const repo = "/work/repo";
 const thread = { workspaceId: "ws", sessionId: "s1" };
@@ -15,64 +15,69 @@ async function freshStore(): Promise<{ store: SandboxSettingsStore; dir: string 
   return { store, dir };
 }
 
-test("allows every host by default and records each one", async () => {
+test("repositories allow all hosts by default", async () => {
   const { store } = await freshStore();
-  expect(store.decide(repo, "Example.COM", thread).allowed).toBe(true);
-  expect(store.decide(repo, "example.com", thread).allowed).toBe(true);
-  const [record] = store.repoRecords([]);
-  expect(record?.effectiveMode).toBe("allow-all");
-  expect(record?.hosts).toEqual([
-    expect.objectContaining({ host: "example.com", allowedCount: 2, blockedCount: 0 }),
-  ]);
+  expect(store.rulesFor(repo)).toEqual({ mode: "allow-all", allowedHosts: [], blockedHosts: [] });
 });
 
-test("a blocked host is refused immediately, even in allow-all mode", async () => {
+test("host rules belong to one repository and can be cleared", async () => {
   const { store } = await freshStore();
-  await store.update({ kind: "host-rule", repoPath: repo, host: "evil.test", rule: "block" });
-  const verdict = store.decide(repo, "evil.test", thread);
-  expect(verdict).toEqual({ allowed: false, reason: "evil.test is blocked for this repository" });
-  expect(store.decide("/work/other", "evil.test", thread).allowed).toBe(true);
-  await store.update({ kind: "host-rule", repoPath: repo, host: "evil.test", rule: null });
-  expect(store.decide(repo, "evil.test", thread).allowed).toBe(true);
-});
-
-test("allowlist mode refuses unlisted hosts until they are allowed", async () => {
-  const { store } = await freshStore();
-  await store.update({ kind: "repo-network-mode", repoPath: repo, mode: "allowlist" });
-  expect(store.decide(repo, "registry.npmjs.org", thread).allowed).toBe(false);
+  await store.update({ kind: "host-rule", repoPath: repo, host: "Evil.TEST", rule: "block" });
   await store.update({ kind: "host-rule", repoPath: repo, host: "*.npmjs.org", rule: "allow" });
-  expect(store.decide(repo, "registry.npmjs.org", thread).allowed).toBe(true);
-  expect(store.decide(repo, "npmjs.org.evil.test", thread).allowed).toBe(false);
-  const record = store.repoRecords([]).find((entry) => entry.repoPath === repo);
-  expect(record?.hosts.find((entry) => entry.host === "registry.npmjs.org")).toMatchObject({
-    allowedCount: 1,
-    blockedCount: 1,
+  expect(store.rulesFor(repo)).toMatchObject({
+    allowedHosts: ["*.npmjs.org"],
+    blockedHosts: ["evil.test"],
+  });
+  expect(store.rulesFor("/work/other").blockedHosts).toEqual([]);
+  await store.update({ kind: "host-rule", repoPath: repo, host: "evil.test", rule: null });
+  expect(store.rulesFor(repo).blockedHosts).toEqual([]);
+  // Allowing a blocked host moves it rather than listing it twice.
+  await store.update({ kind: "host-rule", repoPath: repo, host: "x.test", rule: "block" });
+  await store.update({ kind: "host-rule", repoPath: repo, host: "x.test", rule: "allow" });
+  expect(store.rulesFor(repo)).toMatchObject({
+    allowedHosts: ["*.npmjs.org", "x.test"],
+    blockedHosts: [],
   });
 });
 
 test("the default mode applies to repositories without an override", async () => {
   const { store } = await freshStore();
   await store.update({ kind: "default-network-mode", mode: "allowlist" });
-  expect(store.decide(repo, "example.com", thread).allowed).toBe(false);
+  expect(store.rulesFor(repo).mode).toBe("allowlist");
   await store.update({ kind: "repo-network-mode", repoPath: repo, mode: "allow-all" });
-  expect(store.decide(repo, "example.com", thread).allowed).toBe(true);
+  expect(store.rulesFor(repo).mode).toBe("allow-all");
   await store.update({ kind: "repo-network-mode", repoPath: repo, mode: null });
-  expect(store.decide(repo, "example.com", thread).allowed).toBe(false);
+  expect(store.rulesFor(repo).mode).toBe("allowlist");
+});
+
+test("the host log adds counts per repository, newest first", async () => {
+  const { store } = await freshStore();
+  store.record(repo, "Example.COM", true, thread, 3, "2026-10-09T10:00:00.000Z");
+  store.record(repo, "example.com", false, thread, 1, "2026-10-09T10:01:00.000Z");
+  store.record(repo, "other.test", true, thread, 1, "2026-10-09T09:00:00.000Z");
+  const [record] = store.repoRecords([]);
+  expect(record?.hosts.map((host) => host.host)).toEqual(["example.com", "other.test"]);
+  expect(record?.hosts[0]).toMatchObject({
+    allowedCount: 3,
+    blockedCount: 1,
+    firstSeenAt: "2026-10-09T10:00:00.000Z",
+    lastSeenAt: "2026-10-09T10:01:00.000Z",
+    lastSessionId: "s1",
+  });
 });
 
 test("settings and the host log survive a restart", async () => {
   const { store, dir } = await freshStore();
   await store.update({ kind: "enabled", enabled: false });
   await store.update({ kind: "host-rule", repoPath: repo, host: "a.test", rule: "block" });
-  store.decide(repo, "a.test", thread);
+  store.record(repo, "a.test", false, thread);
   await store.flush();
   const reopened = new SandboxSettingsStore(dir);
   await reopened.load();
   expect(reopened.enabled(true)).toBe(false);
-  expect(reopened.decide(repo, "a.test", thread).allowed).toBe(false);
-  expect(reopened.repoRecords([])[0]?.hosts[0]).toMatchObject({ host: "a.test", blockedCount: 2 });
-  const log = await readFile(join(dir, "network-log.json"), "utf8");
-  expect(log).not.toContain("http");
+  expect(reopened.rulesFor(repo).blockedHosts).toEqual(["a.test"]);
+  expect(reopened.repoRecords([])[0]?.hosts[0]).toMatchObject({ host: "a.test", blockedCount: 1 });
+  expect(await readFile(join(dir, "network-log.json"), "utf8")).not.toContain("http");
 });
 
 test("an invalid settings file is refused and kept", async () => {
@@ -83,11 +88,9 @@ test("an invalid settings file is refused and kept", async () => {
   expect(await readFile(join(dir, "sandbox-settings.json"), "utf8")).toBe(original);
 });
 
-test("host names are normalized and wildcards match like Gondolin's", () => {
+test("host names are normalized and URLs are refused", () => {
   expect(normalizeSandboxHost(" API.GitHub.com. ")).toBe("api.github.com");
+  expect(normalizeSandboxHost("*.github.com")).toBe("*.github.com");
   expect(normalizeSandboxHost("https://x.test")).toBeUndefined();
   expect(normalizeSandboxHost("a..b")).toBeUndefined();
-  expect(sandboxHostMatches("api.github.com", "*.github.com")).toBe(true);
-  expect(sandboxHostMatches("github.com", "*.github.com")).toBe(false);
-  expect(sandboxHostMatches("anything", "*")).toBe(true);
 });

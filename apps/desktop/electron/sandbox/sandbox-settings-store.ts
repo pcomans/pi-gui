@@ -1,7 +1,6 @@
 import path from "node:path";
 import {
   normalizeSandboxHost,
-  sandboxHostMatches,
   type SandboxHostLogEntry,
   type SandboxNetworkMode,
   type SandboxRepoNetworkRecord,
@@ -31,12 +30,6 @@ interface SettingsFile {
 interface LogFile {
   readonly version: typeof LOG_VERSION;
   readonly repos: Readonly<Record<string, readonly SandboxHostLogEntry[]>>;
-}
-
-export interface NetworkVerdict {
-  readonly allowed: boolean;
-  /** Why a host was blocked, for the guest's error response. */
-  readonly reason?: string;
 }
 
 const EMPTY_SETTINGS: SettingsFile = {
@@ -131,20 +124,6 @@ export function decodeSandboxNetworkLog(value: unknown): LogFile {
   return { version: LOG_VERSION, repos };
 }
 
-function decodeVmPids(value: unknown): { version: 1; pids: number[] } {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.pids)) {
-    fail("vm-processes", "pids");
-  }
-  return {
-    version: 1,
-    pids: value.pids.map((pid, index) =>
-      typeof pid === "number" && Number.isInteger(pid) && pid > 1
-        ? pid
-        : fail("vm-processes", `pids[${index}]`),
-    ),
-  };
-}
-
 /**
  * Sandbox preferences and the outbound host log. Rules belong to a repository's main checkout, so
  * its worktrees share them. The log keeps host names and counts only, never URLs or contents.
@@ -155,12 +134,10 @@ export class SandboxSettingsStore {
   private logSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly settingsPath: string;
   private readonly logPath: string;
-  private readonly vmPidsPath: string;
 
   constructor(directory: string) {
     this.settingsPath = path.join(directory, "sandbox-settings.json");
     this.logPath = path.join(directory, "network-log.json");
-    this.vmPidsPath = path.join(directory, "vm-processes.json");
   }
 
   async load(): Promise<void> {
@@ -191,26 +168,18 @@ export class SandboxSettingsStore {
     );
   }
 
-  /** Decide one outbound request and record it in the repository's host log. */
-  decide(
-    repoPath: string,
-    host: string,
-    thread: { readonly workspaceId: string; readonly sessionId: string },
-  ): NetworkVerdict {
-    const verdict = this.verdict(repoPath, host.toLowerCase());
-    this.record(repoPath, host.toLowerCase(), verdict.allowed, thread);
-    return verdict;
-  }
-
-  /** The verdict alone; the caller records the outcome once it is known. */
-  check(repoPath: string, host: string): NetworkVerdict {
-    return this.verdict(repoPath, host.toLowerCase());
-  }
-
-  /** Whether the person allowed this exact host, which private addresses require. */
-  explicitlyAllowed(repoPath: string, host: string): boolean {
+  /** The rules a repository's sandboxes enforce. */
+  rulesFor(repoPath: string): {
+    readonly mode: SandboxNetworkMode;
+    readonly allowedHosts: readonly string[];
+    readonly blockedHosts: readonly string[];
+  } {
     const rules = this.settings.repos[repoPath];
-    return Boolean(rules?.allowedHosts.some((pattern) => sandboxHostMatches(host, pattern)));
+    return {
+      mode: rules?.mode ?? this.settings.defaultNetworkMode,
+      allowedHosts: rules?.allowedHosts ?? [],
+      blockedHosts: rules?.blockedHosts ?? [],
+    };
   }
 
   repoRecords(extraRepoPaths: readonly string[]): SandboxRepoNetworkRecord[] {
@@ -234,20 +203,6 @@ export class SandboxSettingsStore {
     });
   }
 
-  /** QEMU processes this app started, so a later launch can stop any a crash left behind. */
-  async saveVmPids(pids: readonly number[]): Promise<void> {
-    await writeFileAtomicQueued(
-      this.vmPidsPath,
-      `${JSON.stringify({ version: 1, pids })}\n`,
-      decodeVmPids,
-    );
-  }
-
-  async loadVmPids(): Promise<number[]> {
-    const saved = await readJsonWithBackup(this.vmPidsPath);
-    return saved.value === undefined ? [] : decodeVmPids(saved.value).pids;
-  }
-
   async flush(): Promise<void> {
     if (this.logSaveTimer) clearTimeout(this.logSaveTimer);
     this.logSaveTimer = undefined;
@@ -261,39 +216,26 @@ export class SandboxSettingsStore {
     );
   }
 
-  private verdict(repoPath: string, host: string): NetworkVerdict {
-    const rules = this.settings.repos[repoPath];
-    if (rules?.blockedHosts.some((pattern) => sandboxHostMatches(host, pattern))) {
-      return { allowed: false, reason: `${host} is blocked for this repository` };
-    }
-    const mode = rules?.mode ?? this.settings.defaultNetworkMode;
-    if (
-      mode === "allowlist" &&
-      !rules?.allowedHosts.some((pattern) => sandboxHostMatches(host, pattern))
-    ) {
-      return { allowed: false, reason: `${host} is not on this repository's allowlist` };
-    }
-    return { allowed: true };
-  }
-
   record(
     repoPath: string,
     host: string,
     allowed: boolean,
     thread: { readonly workspaceId: string; readonly sessionId: string },
+    count = 1,
+    seenAt = new Date().toISOString(),
   ): void {
     const entries = this.log.get(repoPath) ?? new Map<string, SandboxHostLogEntry>();
     this.log.set(repoPath, entries);
     host = host.toLowerCase();
-    const now = new Date().toISOString();
+    const now = seenAt;
     const previous = entries.get(host);
     entries.delete(host);
     entries.set(host, {
       host,
       firstSeenAt: previous?.firstSeenAt ?? now,
       lastSeenAt: now,
-      allowedCount: (previous?.allowedCount ?? 0) + (allowed ? 1 : 0),
-      blockedCount: (previous?.blockedCount ?? 0) + (allowed ? 0 : 1),
+      allowedCount: (previous?.allowedCount ?? 0) + (allowed ? count : 0),
+      blockedCount: (previous?.blockedCount ?? 0) + (allowed ? 0 : count),
       lastWorkspaceId: thread.workspaceId,
       lastSessionId: thread.sessionId,
     });
@@ -310,6 +252,8 @@ export class SandboxSettingsStore {
 
 function applyUpdate(settings: SettingsFile, update: SandboxSettingsUpdate): SettingsFile {
   switch (update.kind) {
+    case "remove-unused-sandboxes":
+      return settings;
     case "enabled":
       return { ...settings, enabled: update.enabled };
     case "default-network-mode":

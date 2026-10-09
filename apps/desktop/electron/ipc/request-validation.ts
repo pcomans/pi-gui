@@ -403,6 +403,8 @@ export function expectSandboxSettingsUpdate(value: unknown): SandboxSettingsUpda
   switch (record.kind) {
     case "enabled":
       return { kind: "enabled", enabled: expectBoolean(record.enabled, "update.enabled") };
+    case "remove-unused-sandboxes":
+      return { kind: "remove-unused-sandboxes" };
     case "default-network-mode":
       return { kind: "default-network-mode", mode: expectSandboxNetworkMode(record.mode, "mode") };
     case "repo-network-mode":

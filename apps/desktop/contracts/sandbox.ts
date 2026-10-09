@@ -4,7 +4,8 @@ export const SANDBOX_STATUS_KEY = "pi-gui-sandbox";
 /** Whether a sandboxed thread may reach any host, or only hosts the person allowed. */
 export type SandboxNetworkMode = "allow-all" | "allowlist";
 export type SandboxHostRule = "allow" | "block";
-export type SandboxImageState = "missing" | "building" | "ready" | "failed";
+/** Docker Sandboxes (sbx): installed, signed in and its daemon answering. */
+export type SandboxBackendState = "missing" | "signed-out" | "unavailable" | "ready";
 export type SandboxSessionState = "starting" | "ready" | "idle" | "failed";
 
 /** One outbound host a repository's sandboxes contacted. Host names only, never URLs. */
@@ -41,9 +42,18 @@ export interface SandboxSnapshot {
   /** False on platforms Gondolin cannot run on (Windows). */
   readonly supported: boolean;
   readonly enabled: boolean;
-  /** QEMU binary the sandbox needs, or how to install it. */
-  readonly qemu: { readonly found: boolean; readonly installHint: string };
-  readonly baseImage: { readonly state: SandboxImageState; readonly error?: string };
+  readonly backend: {
+    readonly state: SandboxBackendState;
+    readonly message?: string;
+    readonly installHint: string;
+  };
+  /**
+   * sbx's global policy lets every sandbox reach any host. Its rules win over per-sandbox
+   * allows, so an allowlist cannot narrow it; only blocks apply.
+   */
+  readonly globalAllowsAll: boolean;
+  /** Sandboxes pi-gui created; unused ones belong to no open thread. */
+  readonly sandboxes: { readonly total: number; readonly running: number; readonly unused: number };
   readonly defaultNetworkMode: SandboxNetworkMode;
   readonly repos: readonly SandboxRepoNetworkRecord[];
   readonly sessions: readonly SandboxSessionRecord[];
@@ -57,6 +67,7 @@ export type SandboxSettingsUpdate =
       readonly repoPath: string;
       readonly mode: SandboxNetworkMode | null;
     }
+  | { readonly kind: "remove-unused-sandboxes" }
   | {
       readonly kind: "host-rule";
       readonly repoPath: string;
@@ -70,14 +81,4 @@ export function normalizeSandboxHost(value: string): string | undefined {
   return /^[a-z0-9*]([a-z0-9*.-]{0,251}[a-z0-9*])?$/.test(host) && !host.includes("..")
     ? host
     : undefined;
-}
-
-/** `*` matches any run of characters, as in Gondolin's host patterns. */
-export function sandboxHostMatches(host: string, pattern: string): boolean {
-  if (pattern === "*") return true;
-  const escaped = pattern
-    .split("*")
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${escaped}$`, "i").test(host);
 }
