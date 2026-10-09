@@ -366,6 +366,11 @@ test("SBX-A2/B1: a new thread's bash runs in Linux and the status shows the sand
   // The checkout is mounted at the same absolute path it has on the host.
   expect(output).toContain(fixture.workspacePath);
   await expect(sandboxStatus(window)).toHaveAttribute("data-state", "on");
+  // SBX-H1: the bash row says it ran in the sandbox.
+  await expect(window.getByTestId("timeline-tool-location").first()).toHaveAttribute(
+    "data-location",
+    "sandbox",
+  );
 
   const sandboxes = await ownSandboxes();
   expect(sandboxes.map((sandbox) => sandbox.status)).toEqual(["running"]);

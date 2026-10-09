@@ -330,7 +330,7 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 **As a** pi-gui user, **I want** each tool row in the transcript to show whether it ran in the sandbox or on the host, **so I can** audit a run afterwards.
 
-- [ ] Built-in tool rows are marked Sandbox.
+- [x] Built-in tool rows are marked Sandbox.
 - [ ] MCP and extension tool rows are marked Host.
 
 ### SBX-H2 — Inspect a sandbox · Later
