@@ -10,20 +10,20 @@ Pi no longer runs with full access to my machine. Its built-in tools (`bash`, `r
 - **Ownership:** a hidden pi-gui extension, injected through the driver's `sessionExtensions`, scoped per session (`ctx.cwd`, not `process.cwd()`).
 - **One sandbox per thread**, mounting that thread's checkout at its own path (plus the main repository's `.git` for linked worktrees). It keeps its state until removed.
 - **Credentials** stay on the host. `sbx` keeps service secrets and fills them in at its proxy; the sandbox sees placeholders.
-- **Network:** the user chooses **Allow all** or **Allowlist**. Every outbound host is always recorded, and the user can block a host at any time.
+- **Network:** sandboxes reach any host the user has not blocked, per repository; services on the host stay blocked unless allowed by name. Every outbound host is always recorded, and the user can block a host at any time. An **Allowlist** mode is deferred (see SBX-F1).
 
 ## Open questions
 
 Each item lists a proposed default; confirm or change it before implementation.
 
-| #   | Question                                                                                                      | Proposed default                                                        |
-| --- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Q1  | Where do network rules live: global, per repository, or per thread?                                           | Per repository, inheriting a global default                             |
-| Q2  | In Allowlist mode, should an unknown host pause the request and ask live, or block and offer one-click Allow? | Block + one-click Allow                                                 |
-| Q3  | Should threads in the main checkout (not a worktree) also be sandboxed?                                       | Yes, every thread by default                                            |
-| Q4  | Does the integrated terminal for a sandboxed thread open in the sandbox or on the host?                       | Implemented: host, clearly labeled as unsandboxed                       |
-| Q5  | Is there a per-thread "run unsandboxed" escape hatch, a per-call host approval, or neither?                   | Per-thread toggle with a persistent warning; no per-call approval in v1 |
-| Q6  | Do changes outside the workspace (e.g. `apt-get install`) survive a sandbox restart?                          | Decided: yes, each thread's sandbox keeps its state until it is removed |
+| #   | Question                                                                                                      | Proposed default                                                         |
+| --- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Q1  | Where do network rules live: global, per repository, or per thread?                                           | Decided: per repository (no global default while there is only one mode) |
+| Q2  | In Allowlist mode, should an unknown host pause the request and ask live, or block and offer one-click Allow? | Block + one-click Allow (deferred with SBX-F1)                           |
+| Q3  | Should threads in the main checkout (not a worktree) also be sandboxed?                                       | Yes, every thread by default                                             |
+| Q4  | Does the integrated terminal for a sandboxed thread open in the sandbox or on the host?                       | Implemented: host, clearly labeled as unsandboxed                        |
+| Q5  | Is there a per-thread "run unsandboxed" escape hatch, a per-call host approval, or neither?                   | Per-thread toggle with a persistent warning; no per-call approval in v1  |
+| Q6  | Do changes outside the workspace (e.g. `apt-get install`) survive a sandbox restart?                          | Decided: yes, each thread's sandbox keeps its state until it is removed  |
 
 ## Story format
 
@@ -249,9 +249,11 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 
 ## F. Network control
 
-### SBX-F1 — Choose a network mode · MVP
+### SBX-F1 — Choose a network mode · Deferred
 
 **As a** pi-gui user, **I want** to choose between **Allow all** and **Allowlist** for sandbox network access, **so I can** trade convenience for control.
+
+Deferred: `sbx`'s global policy outranks a sandbox's own allow rules, and on its `allow-all` default it lets every sandbox reach any host, so an allowlist cannot narrow anything. Changing that policy affects sandboxes outside pi-gui, so pi-gui leaves it alone and offers only blocking (SBX-F3) until `sbx` can deny by default per sandbox.
 
 - [ ] Mode is set in settings at the scope agreed in Q1.
 - [ ] The current mode is visible from the sandbox status.
@@ -273,7 +275,9 @@ Each story has an ID, a priority, the story itself, and acceptance checks to run
 - [ ] The agent sees a clear "blocked by sandbox network policy" error, not a hang.
 - [ ] Unblocking restores access.
 
-### SBX-F4 — Allow a host in Allowlist mode · MVP
+### SBX-F4 — Allow a host in Allowlist mode · Deferred
+
+Deferred with SBX-F1, for the same reason. Allowing a service on the host by name stays in SBX-F5.
 
 **As a** pi-gui user in Allowlist mode, **I want** blocked hosts surfaced with a one-click Allow, **so I can** grow the list as work needs it.
 

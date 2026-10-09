@@ -51,12 +51,13 @@ Real credentials never enter the sandbox. `sbx` keeps service secrets on the hos
 
 `sbx`'s proxy enforces each sandbox's rules, which pi-gui keeps in step with the repository's settings (a worktree uses its main checkout's rules):
 
-- **Allow all** adds an allow-everything rule to the sandbox; **Allowlist** adds one allow rule per listed host.
-- Each blocked host is a deny rule, which `sbx` applies over any allow, so blocking works in every mode and takes effect on the next request.
-- Services on this Mac (`host.docker.internal`, `localhost`) are denied unless the person allows that name.
-- `sbx`'s global policy applies to all sandboxes. When it allows every host (its `allow-all` default), an allowlist cannot narrow it; Settings says so. Making `sbx` deny by default also affects sandboxes outside pi-gui, so pi-gui does not change it.
+- Every sandbox gets an allow-everything rule, so it can reach any host.
+- Each blocked host is a deny rule, which `sbx` applies over any allow, so blocking takes effect on the next request.
+- Services on this Mac (`host.docker.internal`, `localhost`) are denied unless the person allows that exact name for the repository. Those two names are the only hosts that can be allowed; `allowedHosts` in `<userData>/sandbox/sandbox-settings.json` holds just them.
 
-pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a per-repository host log (host names, counts, times and the last thread; never URLs or contents) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists it with Allow/Block buttons. Counting starts from what `sbx` reports when a run first uses a sandbox, so a relaunch does not count earlier traffic again. Raw TCP connections follow the rules but do not appear in `sbx`'s log.
+There is no allowlist mode for now. `sbx`'s global policy applies to all sandboxes and outranks their own allow rules; on its `allow-all` default an allowlist could not narrow anything, and making `sbx` deny by default also affects sandboxes outside pi-gui, so pi-gui does not change it. Settings files saved with the earlier Allowlist mode still load: their `defaultNetworkMode`, per-repository `mode` and allowlisted hosts are ignored and dropped on the next save.
+
+pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a per-repository host log (host names, counts, times and the last thread; never URLs or contents) in `<userData>/sandbox/network-log.json`. Settings > Sandbox lists it with Block/Unblock buttons, and Allow buttons for the services on this Mac. Counting starts from what `sbx` reports when a run first uses a sandbox, so a relaunch does not count earlier traffic again. Raw TCP connections follow the rules but do not appear in `sbx`'s log.
 
 ## Limitations
 

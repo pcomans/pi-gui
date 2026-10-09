@@ -1,15 +1,15 @@
 import path from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
-import type {
-  SandboxSessionState,
-  SandboxSettingsUpdate,
-  SandboxSnapshot,
+import {
+  SANDBOX_HOST_ONLY_NAMES,
+  type SandboxSessionState,
+  type SandboxSettingsUpdate,
+  type SandboxSnapshot,
 } from "../../contracts/sandbox";
 import { createSandboxExtension } from "./sandbox-extension";
 import {
   addNetworkRule,
-  globalPolicyAllowsAll,
   listSandboxes,
   policyLog,
   removeNetworkRule,
@@ -96,13 +96,9 @@ export class SandboxOwner {
   async snapshot(): Promise<SandboxSnapshot> {
     const status = await this.sbxStatus(true);
     const ready = status.state === "ready" ? status.binary : undefined;
-    const [listed, globalAllowsAll] = ready
-      ? await Promise.all([
-          listSandboxes(ready).catch(() => []),
-          globalPolicyAllowsAll(ready).catch(() => false),
-          this.pollLog(ready),
-        ])
-      : [[], false];
+    const [listed] = ready
+      ? await Promise.all([listSandboxes(ready).catch(() => []), this.pollLog(ready)])
+      : [[]];
     const owned = this.store.ownedSandboxes();
     const sandboxes = listed.filter((sandbox) => owned.has(sandbox.name));
     return {
@@ -113,13 +109,11 @@ export class SandboxOwner {
         ...("message" in status ? { message: status.message } : {}),
         installHint: sbxInstallHint(),
       },
-      globalAllowsAll,
       sandboxes: {
         total: sandboxes.length,
         running: sandboxes.filter((sandbox) => sandbox.status === "running").length,
         unused: sandboxes.filter((sandbox) => !this.inUse(sandbox.name)).length,
       },
-      defaultNetworkMode: this.store.defaultNetworkMode,
       repos: this.store.repoRecords([...this.knownRepos]),
       sessions: [...this.sessions].map((session) => ({
         ...session.ref,
@@ -141,11 +135,7 @@ export class SandboxOwner {
       await this.removeUnusedSandboxes();
     } else {
       await this.store.update(update);
-      await this.reapplyNetworkRules(
-        update.kind === "host-rule" || update.kind === "repo-network-mode"
-          ? update.repoPath
-          : undefined,
-      );
+      await this.reapplyNetworkRules(update.kind === "host-rule" ? update.repoPath : undefined);
     }
     this.changed();
     return this.snapshot();
@@ -249,17 +239,16 @@ export class SandboxOwner {
   }
 
   /**
-   * Make a sandbox's own rules match its repository: allow everything or the allowlist, and deny
-   * blocked hosts (sbx lets a deny win over any allow).
+   * Make a sandbox's own rules match its repository: allow every host and deny the blocked ones
+   * (sbx lets a deny win over any allow). There is no allowlist mode: sbx's global policy allows
+   * every host by default and outranks per-sandbox allows, so an allowlist could not narrow it.
    */
   private async applyNetworkRules(sbx: string, sandbox: string, repoPath: string): Promise<void> {
     const rules = this.store.rulesFor(repoPath);
     // Services on this Mac stay out of reach unless the person allowed one by name.
-    const hostOnly = HOST_ONLY_NAMES.filter((name) => !rules.allowedHosts.includes(name));
+    const hostOnly = SANDBOX_HOST_ONLY_NAMES.filter((name) => !rules.allowedHosts.includes(name));
     const wanted = [
-      ...(rules.mode === "allow-all"
-        ? [{ decision: "allow" as const, resource: "**" }]
-        : rules.allowedHosts.map((host) => ({ decision: "allow" as const, resource: host }))),
+      { decision: "allow" as const, resource: "**" },
       ...[...new Set([...rules.blockedHosts, ...hostOnly])].map((host) => ({
         decision: "deny" as const,
         resource: host,
@@ -374,6 +363,3 @@ export class SandboxOwner {
     for (const listener of this.listeners) listener();
   }
 }
-
-/** Names that reach this Mac from inside a sandbox. */
-const HOST_ONLY_NAMES = ["host.docker.internal", "localhost"];

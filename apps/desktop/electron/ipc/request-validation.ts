@@ -40,7 +40,7 @@ import {
   type UpdateScheduledTaskInput,
 } from "../../contracts/scheduled-tasks";
 import { assertComposerAttachmentsAccepted } from "../../contracts/composer-attachments";
-import type { SandboxNetworkMode, SandboxSettingsUpdate } from "../../contracts/sandbox";
+import type { SandboxSettingsUpdate } from "../../contracts/sandbox";
 import {
   decodeTaskWorkbenchTemplate,
   type SaveTaskWorkbenchTemplateInput,
@@ -391,13 +391,6 @@ export function expectNewMcpServerInput(value: unknown): NewMcpServerInput {
   };
 }
 
-function expectSandboxNetworkMode(value: unknown, name: string): SandboxNetworkMode {
-  if (value !== "allow-all" && value !== "allowlist") {
-    throw new TypeError(`${name} must be allow-all or allowlist`);
-  }
-  return value;
-}
-
 export function expectSandboxSettingsUpdate(value: unknown): SandboxSettingsUpdate {
   const record = expectRecord(value, "update");
   switch (record.kind) {
@@ -405,14 +398,6 @@ export function expectSandboxSettingsUpdate(value: unknown): SandboxSettingsUpda
       return { kind: "enabled", enabled: expectBoolean(record.enabled, "update.enabled") };
     case "remove-unused-sandboxes":
       return { kind: "remove-unused-sandboxes" };
-    case "default-network-mode":
-      return { kind: "default-network-mode", mode: expectSandboxNetworkMode(record.mode, "mode") };
-    case "repo-network-mode":
-      return {
-        kind: "repo-network-mode",
-        repoPath: expectNonEmptyString(record.repoPath, "update.repoPath"),
-        mode: record.mode === null ? null : expectSandboxNetworkMode(record.mode, "mode"),
-      };
     case "host-rule": {
       const rule = record.rule;
       if (rule !== null && rule !== "allow" && rule !== "block") {

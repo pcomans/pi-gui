@@ -84,7 +84,7 @@ export const SETTINGS_SECTIONS = [
     title: "Sandbox",
     group: "Agent",
     icon: <ShieldIcon />,
-    keywords: ["sandbox", "vm", "qemu", "gondolin", "network", "allowlist", "block", "hosts"],
+    keywords: ["sandbox", "vm", "qemu", "gondolin", "network", "block", "hosts"],
     description: () => "Run pi's tools in a virtual machine and control what it can reach.",
     needsWorkspace: false,
   },

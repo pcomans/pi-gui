@@ -624,7 +624,6 @@ async function createNetworkFixture(
     join(sandboxDir, "sandbox-settings.json"),
     `${JSON.stringify({
       version: 1,
-      defaultNetworkMode: "allow-all",
       repos: { [fixture.workspacePath]: { allowedHosts: [], blockedHosts: ["example.com"] } },
     })}\n`,
   );

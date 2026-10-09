@@ -126,7 +126,6 @@ interface PolicyRuleJson {
   readonly resource_type?: string;
   readonly decision?: string;
   readonly resources?: readonly string[];
-  readonly status?: string;
 }
 
 async function policyRules(sbx: string): Promise<PolicyRuleJson[]> {
@@ -153,18 +152,6 @@ export async function sandboxNetworkRules(
       decision: rule.decision as "allow" | "deny",
       resources: rule.resources ?? [],
     }));
-}
-
-/** Whether a global rule lets every sandbox reach any host, which makes an allowlist moot. */
-export async function globalPolicyAllowsAll(sbx: string): Promise<boolean> {
-  return (await policyRules(sbx)).some(
-    (rule) =>
-      rule.applies_to === "all" &&
-      rule.resource_type === "network" &&
-      rule.decision === "allow" &&
-      rule.status !== "inactive" &&
-      (rule.resources ?? []).includes("**"),
-  );
 }
 
 export async function addNetworkRule(

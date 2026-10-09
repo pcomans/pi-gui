@@ -37,8 +37,16 @@ export function terminalSandboxNotice(
   };
 }
 
-/** Whether a sandboxed thread may reach any host, or only hosts the person allowed. */
-export type SandboxNetworkMode = "allow-all" | "allowlist";
+/**
+ * Names that reach this Mac from inside a sandbox. Sandboxes reach every other host unless it is
+ * blocked; these stay denied unless the person allows that exact name for a repository.
+ */
+export const SANDBOX_HOST_ONLY_NAMES: readonly string[] = ["host.docker.internal", "localhost"];
+
+export function isSandboxHostOnlyName(host: string): boolean {
+  return SANDBOX_HOST_ONLY_NAMES.includes(host);
+}
+
 export type SandboxHostRule = "allow" | "block";
 /** Docker Sandboxes (sbx): installed, signed in and its daemon answering. */
 export type SandboxBackendState = "missing" | "signed-out" | "unavailable" | "ready";
@@ -59,9 +67,7 @@ export interface SandboxHostLogEntry {
 export interface SandboxRepoNetworkRecord {
   /** Main checkout of the repository; its worktrees share these rules. */
   readonly repoPath: string;
-  /** Set only when the repository overrides the default mode. */
-  readonly mode?: SandboxNetworkMode;
-  readonly effectiveMode: SandboxNetworkMode;
+  /** Services on this Mac (SANDBOX_HOST_ONLY_NAMES) the person allowed; nothing else is listed. */
   readonly allowedHosts: readonly string[];
   readonly blockedHosts: readonly string[];
   readonly hosts: readonly SandboxHostLogEntry[];
@@ -75,7 +81,7 @@ export interface SandboxSessionRecord {
 }
 
 export interface SandboxSnapshot {
-  /** False on platforms Gondolin cannot run on (Windows). */
+  /** False on platforms Docker Sandboxes cannot run on (Windows). */
   readonly supported: boolean;
   readonly enabled: boolean;
   readonly backend: {
@@ -83,28 +89,17 @@ export interface SandboxSnapshot {
     readonly message?: string;
     readonly installHint: string;
   };
-  /**
-   * sbx's global policy lets every sandbox reach any host. Its rules win over per-sandbox
-   * allows, so an allowlist cannot narrow it; only blocks apply.
-   */
-  readonly globalAllowsAll: boolean;
   /** Sandboxes pi-gui created; unused ones belong to no open thread. */
   readonly sandboxes: { readonly total: number; readonly running: number; readonly unused: number };
-  readonly defaultNetworkMode: SandboxNetworkMode;
   readonly repos: readonly SandboxRepoNetworkRecord[];
   readonly sessions: readonly SandboxSessionRecord[];
 }
 
 export type SandboxSettingsUpdate =
   | { readonly kind: "enabled"; readonly enabled: boolean }
-  | { readonly kind: "default-network-mode"; readonly mode: SandboxNetworkMode }
-  | {
-      readonly kind: "repo-network-mode";
-      readonly repoPath: string;
-      readonly mode: SandboxNetworkMode | null;
-    }
   | { readonly kind: "remove-unused-sandboxes" }
   | {
+      /** "allow" applies only to SANDBOX_HOST_ONLY_NAMES; every other host is allowed unless blocked. */
       readonly kind: "host-rule";
       readonly repoPath: string;
       readonly host: string;

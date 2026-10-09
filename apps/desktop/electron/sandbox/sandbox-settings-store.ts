@@ -1,8 +1,9 @@
 import path from "node:path";
 import {
+  isSandboxHostOnlyName,
   normalizeSandboxHost,
+  SANDBOX_HOST_ONLY_NAMES,
   type SandboxHostLogEntry,
-  type SandboxNetworkMode,
   type SandboxRepoNetworkRecord,
   type SandboxSettingsUpdate,
 } from "../../contracts/sandbox";
@@ -15,7 +16,7 @@ const MAX_LOGGED_HOSTS = 500;
 const LOG_SAVE_DELAY_MS = 2_000;
 
 interface RepoRules {
-  readonly mode?: SandboxNetworkMode;
+  /** Services on this Mac the person allowed (SANDBOX_HOST_ONLY_NAMES only). */
   readonly allowedHosts: readonly string[];
   readonly blockedHosts: readonly string[];
 }
@@ -23,7 +24,6 @@ interface RepoRules {
 interface SettingsFile {
   readonly version: typeof SETTINGS_VERSION;
   readonly enabled?: boolean;
-  readonly defaultNetworkMode: SandboxNetworkMode;
   readonly repos: Readonly<Record<string, RepoRules>>;
 }
 
@@ -34,7 +34,6 @@ interface LogFile {
 
 const EMPTY_SETTINGS: SettingsFile = {
   version: SETTINGS_VERSION,
-  defaultNetworkMode: "allow-all",
   repos: {},
 };
 
@@ -46,11 +45,6 @@ function fail(file: string, field: string): never {
   throw new Error(`Invalid sandbox ${file} field ${field}; original data was retained.`);
 }
 
-function decodeMode(value: unknown, field: string): SandboxNetworkMode {
-  if (value !== "allow-all" && value !== "allowlist") fail("settings", field);
-  return value;
-}
-
 function decodeHosts(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) fail("settings", field);
   return value.map((host, index) => {
@@ -60,6 +54,12 @@ function decodeHosts(value: unknown, field: string): string[] {
   });
 }
 
+/**
+ * Files written while pi-gui had an Allowlist mode also carry `defaultNetworkMode`, a per-repo
+ * `mode` and allowlisted hosts in `allowedHosts`. Those are accepted and ignored (sandboxes now
+ * reach every host unless it is blocked), so such a file still loads; only the services on this
+ * Mac remain in `allowedHosts`, and the next save drops the rest.
+ */
 export function decodeSandboxSettings(value: unknown): SettingsFile {
   if (!isRecord(value) || value.version !== SETTINGS_VERSION) fail("settings", "version");
   if (value.enabled !== undefined && typeof value.enabled !== "boolean") {
@@ -70,17 +70,15 @@ export function decodeSandboxSettings(value: unknown): SettingsFile {
   for (const [repoPath, rules] of Object.entries(value.repos)) {
     if (!path.isAbsolute(repoPath) || !isRecord(rules)) fail("settings", `repos.${repoPath}`);
     repos[repoPath] = {
-      ...(rules.mode === undefined
-        ? {}
-        : { mode: decodeMode(rules.mode, `repos.${repoPath}.mode`) }),
-      allowedHosts: decodeHosts(rules.allowedHosts, `repos.${repoPath}.allowedHosts`),
+      allowedHosts: decodeHosts(rules.allowedHosts, `repos.${repoPath}.allowedHosts`).filter(
+        isSandboxHostOnlyName,
+      ),
       blockedHosts: decodeHosts(rules.blockedHosts, `repos.${repoPath}.blockedHosts`),
     };
   }
   return {
     version: SETTINGS_VERSION,
     ...(value.enabled === undefined ? {} : { enabled: value.enabled }),
-    defaultNetworkMode: decodeMode(value.defaultNetworkMode, "defaultNetworkMode"),
     repos,
   };
 }
@@ -191,10 +189,6 @@ export class SandboxSettingsStore {
     return this.settings.enabled ?? fallback;
   }
 
-  get defaultNetworkMode(): SandboxNetworkMode {
-    return this.settings.defaultNetworkMode;
-  }
-
   async update(update: SandboxSettingsUpdate): Promise<void> {
     this.settings = applyUpdate(this.settings, update);
     await writeFileAtomicQueued(
@@ -206,13 +200,11 @@ export class SandboxSettingsStore {
 
   /** The rules a repository's sandboxes enforce. */
   rulesFor(repoPath: string): {
-    readonly mode: SandboxNetworkMode;
     readonly allowedHosts: readonly string[];
     readonly blockedHosts: readonly string[];
   } {
     const rules = this.settings.repos[repoPath];
     return {
-      mode: rules?.mode ?? this.settings.defaultNetworkMode,
       allowedHosts: rules?.allowedHosts ?? [],
       blockedHosts: rules?.blockedHosts ?? [],
     };
@@ -228,8 +220,6 @@ export class SandboxSettingsStore {
       const rules = this.settings.repos[repoPath];
       return {
         repoPath,
-        ...(rules?.mode ? { mode: rules.mode } : {}),
-        effectiveMode: rules?.mode ?? this.settings.defaultNetworkMode,
         allowedHosts: rules?.allowedHosts ?? [],
         blockedHosts: rules?.blockedHosts ?? [],
         hosts: [...(this.log.get(repoPath)?.values() ?? [])].sort((a, b) =>
@@ -292,25 +282,21 @@ function applyUpdate(settings: SettingsFile, update: SandboxSettingsUpdate): Set
       return settings;
     case "enabled":
       return { ...settings, enabled: update.enabled };
-    case "default-network-mode":
-      return { ...settings, defaultNetworkMode: update.mode };
-    case "repo-network-mode": {
-      const rules = repoRules(settings, update.repoPath);
-      const { mode: _previous, ...rest } = rules;
-      return withRepo(
-        settings,
-        update.repoPath,
-        update.mode ? { ...rest, mode: update.mode } : rest,
-      );
-    }
     case "host-rule": {
       const host = normalizeSandboxHost(update.host);
       if (!host) throw new Error(`Not a host name: ${update.host}`);
+      const hostOnly = isSandboxHostOnlyName(host);
+      if (update.rule === "allow" && !hostOnly) {
+        throw new Error(
+          `Only ${SANDBOX_HOST_ONLY_NAMES.join(" and ")} can be allowed; other hosts are reachable unless blocked.`,
+        );
+      }
       const rules = repoRules(settings, update.repoPath);
       const allowedHosts = rules.allowedHosts.filter((entry) => entry !== host);
       const blockedHosts = rules.blockedHosts.filter((entry) => entry !== host);
       if (update.rule === "allow") allowedHosts.push(host);
-      if (update.rule === "block") blockedHosts.push(host);
+      // Services on this Mac are denied unless allowed, so blocking one just withdraws the allow.
+      if (update.rule === "block" && !hostOnly) blockedHosts.push(host);
       return withRepo(settings, update.repoPath, { ...rules, allowedHosts, blockedHosts });
     }
   }

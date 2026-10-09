@@ -1,23 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  isSandboxHostOnlyName,
   normalizeSandboxHost,
+  SANDBOX_HOST_ONLY_NAMES,
   type SandboxHostLogEntry,
   type SandboxHostRule,
-  type SandboxNetworkMode,
   type SandboxRepoNetworkRecord,
   type SandboxSettingsUpdate,
   type SandboxSnapshot,
 } from "../../../contracts/sandbox";
-import { SettingsSegmented, SettingsSelect, SettingsSwitch } from "./settings-controls";
+import { SettingsSwitch } from "./settings-controls";
 import { SettingsGroup, SettingsRow } from "./settings-utils";
 
 /** Sandboxes start and contact hosts in the background, so the page polls while it is open. */
 const REFRESH_MS = 2_000;
-
-const MODE_OPTIONS = [
-  { value: "allow-all", label: "Allow all" },
-  { value: "allowlist", label: "Allowlist" },
-] as const satisfies readonly { value: SandboxNetworkMode; label: string }[];
 
 export function SettingsSandboxSection() {
   const [snapshot, setSnapshot] = useState<SandboxSnapshot | undefined>();
@@ -72,10 +68,6 @@ export function SettingsSandboxSection() {
       <p className="settings-row__description">Checking Docker Sandboxes…</p>
     );
   }
-  const allowlistInUse =
-    snapshot.defaultNetworkMode === "allowlist" ||
-    snapshot.repos.some((repo) => repo.effectiveMode === "allowlist");
-
   return (
     <>
       <SettingsGroup
@@ -142,41 +134,15 @@ export function SettingsSandboxSection() {
       </SettingsGroup>
 
       <SettingsGroup
+        plain
         title="Network"
-        description="Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
+        description="Sandboxes can reach any host you have not blocked; services on this Mac (host.docker.internal, localhost) stay blocked unless you allow them. Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
       >
-        {snapshot.globalAllowsAll && allowlistInUse ? (
-          <div className="settings-row">
-            <span className="settings-row__description settings-warning">
-              Allowlist mode cannot narrow access here: Docker Sandboxes&apos; global policy allows
-              every host, and it applies before pi-gui&apos;s per-sandbox rules. Blocking still
-              works. An allowlist takes effect once sbx&apos;s global policy denies by default (see
-              sbx policy --help); that changes all your Docker sandboxes, so pi-gui leaves it to
-              you.
-            </span>
-          </div>
-        ) : null}
-        <SettingsRow
-          title="Default for repositories"
-          description="Allowlist blocks any host you have not allowed."
-        >
-          <SettingsSegmented
-            label="Default network mode"
-            options={MODE_OPTIONS}
-            value={snapshot.defaultNetworkMode}
-            onChange={(mode) => update({ kind: "default-network-mode", mode })}
-          />
-        </SettingsRow>
+        {null}
       </SettingsGroup>
 
       {snapshot.repos.map((repo) => (
-        <SandboxRepoGroup
-          defaultMode={snapshot.defaultNetworkMode}
-          disabled={pending}
-          key={repo.repoPath}
-          repo={repo}
-          onUpdate={update}
-        />
+        <SandboxRepoGroup disabled={pending} key={repo.repoPath} repo={repo} onUpdate={update} />
       ))}
     </>
   );
@@ -184,12 +150,10 @@ export function SettingsSandboxSection() {
 
 function SandboxRepoGroup({
   repo,
-  defaultMode,
   disabled,
   onUpdate,
 }: {
   readonly repo: SandboxRepoNetworkRecord;
-  readonly defaultMode: SandboxNetworkMode;
   readonly disabled: boolean;
   readonly onUpdate: (update: SandboxSettingsUpdate) => void;
 }) {
@@ -197,60 +161,38 @@ function SandboxRepoGroup({
   const draft = normalizeSandboxHost(draftHost);
   const setRule = (host: string, rule: SandboxHostRule | null) =>
     onUpdate({ kind: "host-rule", repoPath: repo.repoPath, host, rule });
-  const ruled = [
-    ...repo.allowedHosts.filter((host) => !repo.hosts.some((entry) => entry.host === host)),
-    ...repo.blockedHosts.filter((host) => !repo.hosts.some((entry) => entry.host === host)),
-  ];
+  const logged = (host: string) => repo.hosts.some((entry) => entry.host === host);
+  // Blocked hosts and the services on this Mac are listed even before a sandbox contacts them.
+  const unlogged = [...new Set([...repo.blockedHosts, ...SANDBOX_HOST_ONLY_NAMES])].filter(
+    (host) => !logged(host),
+  );
   return (
     <div data-testid="sandbox-repo" data-repo-path={repo.repoPath}>
       <SettingsGroup title={baseName(repo.repoPath)} description={repo.repoPath}>
-        <SettingsRow title="Network access">
-          <SettingsSelect
-            label={`Network access for ${baseName(repo.repoPath)}`}
-            options={[
-              {
-                value: "default",
-                label: `Default (${defaultMode === "allowlist" ? "allowlist" : "allow all"})`,
-              },
-              ...MODE_OPTIONS,
-            ]}
-            value={repo.mode ?? "default"}
-            onChange={(mode) =>
-              onUpdate({
-                kind: "repo-network-mode",
-                repoPath: repo.repoPath,
-                mode: mode === "default" ? null : mode,
-              })
-            }
-          />
-        </SettingsRow>
         <div className="settings-row">
           <input
             aria-label={`Host for ${baseName(repo.repoPath)}`}
             className="settings-text-input"
-            placeholder="e.g. *.npmjs.org"
+            placeholder="e.g. *.example.com"
             value={draftHost}
             onChange={(event) => setDraftHost(event.currentTarget.value)}
           />
           <div className="settings-row__actions">
-            {(["allow", "block"] as const).map((rule) => (
-              <button
-                className="button button--secondary"
-                disabled={disabled || !draft}
-                key={rule}
-                type="button"
-                onClick={() => {
-                  if (!draft) return;
-                  setRule(draft, rule);
-                  setDraftHost("");
-                }}
-              >
-                {rule === "allow" ? "Allow" : "Block"}
-              </button>
-            ))}
+            <button
+              className="button button--secondary"
+              disabled={disabled || !draft}
+              type="button"
+              onClick={() => {
+                if (!draft) return;
+                setRule(draft, "block");
+                setDraftHost("");
+              }}
+            >
+              Block
+            </button>
           </div>
         </div>
-        {repo.hosts.length === 0 && ruled.length === 0 ? (
+        {repo.hosts.length === 0 ? (
           <div className="settings-row">
             <span className="settings-row__description">
               No hosts contacted yet from this repository&apos;s sandboxes.
@@ -259,7 +201,6 @@ function SandboxRepoGroup({
         ) : null}
         {repo.hosts.map((entry) => (
           <SandboxHostRow
-            allowlist={repo.effectiveMode === "allowlist"}
             disabled={disabled}
             entry={entry}
             key={entry.host}
@@ -267,9 +208,8 @@ function SandboxRepoGroup({
             onRule={(rule) => setRule(entry.host, rule)}
           />
         ))}
-        {ruled.map((host) => (
+        {unlogged.map((host) => (
           <SandboxHostRow
-            allowlist={repo.effectiveMode === "allowlist"}
             disabled={disabled}
             entry={undefined}
             host={host}
@@ -287,24 +227,23 @@ function SandboxHostRow({
   entry,
   host = entry?.host ?? "",
   rule,
-  allowlist,
   disabled,
   onRule,
 }: {
-  readonly allowlist: boolean;
   readonly entry: SandboxHostLogEntry | undefined;
   readonly host?: string;
   readonly rule: SandboxHostRule | undefined;
   readonly disabled: boolean;
   readonly onRule: (rule: SandboxHostRule | null) => void;
 }) {
+  const hostOnly = isSandboxHostOnlyName(host);
   const ruleText =
     rule === "allow"
       ? "Allowed by you"
       : rule === "block"
         ? "Blocked by you"
-        : allowlist
-          ? "Not on the allowlist"
+        : hostOnly
+          ? "A service on this Mac, blocked unless you allow it"
           : "";
   const traffic = entry
     ? [
@@ -315,6 +254,14 @@ function SandboxHostRow({
         .filter(Boolean)
         .join(" · ")
     : "Not contacted yet";
+  // Services on this Mac are denied unless allowed; every other host is allowed unless blocked.
+  const action: { readonly label: string; readonly rule: SandboxHostRule | null } = hostOnly
+    ? rule === "allow"
+      ? { label: "Block", rule: null }
+      : { label: "Allow", rule: "allow" }
+    : rule === "block"
+      ? { label: "Unblock", rule: null }
+      : { label: "Block", rule: "block" };
   return (
     <div className="settings-row" data-testid="sandbox-host" data-host={host}>
       <div className="settings-row__label">
@@ -324,43 +271,24 @@ function SandboxHostRow({
         </div>
       </div>
       <div className="settings-row__actions">
-        {rule ? (
-          <button
-            className="button button--secondary"
-            disabled={disabled}
-            type="button"
-            onClick={() => onRule(null)}
-          >
-            {rule === "allow" ? "Remove from allowlist" : "Unblock"}
-          </button>
-        ) : (
-          <>
-            <button
-              className="button button--secondary"
-              disabled={disabled}
-              type="button"
-              onClick={() => onRule("allow")}
-            >
-              Allow
-            </button>
-            <button
-              className="button button--secondary"
-              disabled={disabled}
-              type="button"
-              onClick={() => onRule("block")}
-            >
-              Block
-            </button>
-          </>
-        )}
+        <button
+          className="button button--secondary"
+          disabled={disabled}
+          type="button"
+          onClick={() => onRule(action.rule)}
+        >
+          {action.label}
+        </button>
       </div>
     </div>
   );
 }
 
 function hostRule(repo: SandboxRepoNetworkRecord, host: string): SandboxHostRule | undefined {
-  if (repo.blockedHosts.includes(host)) return "block";
   if (repo.allowedHosts.includes(host)) return "allow";
+  // A service on this Mac is denied either way; only an allow changes it.
+  if (isSandboxHostOnlyName(host)) return undefined;
+  if (repo.blockedHosts.includes(host)) return "block";
   return undefined;
 }
 
