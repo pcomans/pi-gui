@@ -529,24 +529,15 @@ export function PinIcon({ filled = false }: { readonly filled?: boolean }) {
   );
 }
 
+// A trunk with one branch checked out beside it, so the marker reads as a worktree, not an external link.
 export function WorktreeIcon() {
   return (
     <Icon>
+      <circle cx="6" cy="14.5" r="1.85" stroke="currentColor" strokeWidth="1.45" />
+      <circle cx="14" cy="5.5" r="1.85" stroke="currentColor" strokeWidth="1.45" />
+      <path d="M6 3.75v8.9" stroke="currentColor" strokeLinecap="round" strokeWidth="1.45" />
       <path
-        d="M6 5.3h8.1v8.1"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.45"
-      />
-      <path
-        d="M13.9 5.45 5.9 13.45"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.45"
-      />
-      <path
-        d="M5.85 9.75v3.95h3.95"
+        d="M14 7.35v.4c0 2.2-1.8 3.75-4 3.75H8.4c-1.3 0-2.4.6-2.4 1.15"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"

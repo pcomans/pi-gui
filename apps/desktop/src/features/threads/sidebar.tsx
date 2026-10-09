@@ -1627,52 +1627,59 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
           </button>
           <span className="session-row__trailing">
             {thread.environment.kind === "worktree" ? (
-              <span className="session-row__workspace-icon" aria-hidden="true" title="Worktree">
+              <span
+                aria-label="Runs in a worktree"
+                className="session-row__workspace-icon"
+                role="img"
+                title="Runs in a worktree"
+              >
                 <WorktreeIcon />
               </span>
             ) : null}
-            {shortcutBadge ? (
-              <span className="session-row__shortcut" aria-hidden="true">
-                {shortcutBadge.label}
-              </span>
-            ) : (
-              <span className="session-row__time">
-                {formatRelativeTime(sessionLastInteractedAt(thread.session))}
-              </span>
-            )}
-            <span className="session-row__action-cluster">
-              {!archived ? (
-                <button
-                  aria-label={`${pinned ? "Unpin" : "Pin"} ${thread.session.title}${actionContext}`}
-                  aria-pressed={pinned}
-                  className="icon-button session-row__action session-row__pin-action"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onTogglePinned();
-                  }}
-                >
-                  <PinIcon filled={pinned} />
-                </button>
-              ) : null}
-              <span className="shortcut-tooltip-wrap session-row__tooltip-wrap">
-                <button
-                  aria-label={`${archived ? "Restore" : "Archive"} ${thread.session.title}${actionContext}`}
-                  className="icon-button session-row__action"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onAction();
-                  }}
-                >
-                  {archived ? <RestoreIcon /> : <ArchiveIcon />}
-                </button>
-                {threadMenu && !overlay && !menuOpen ? (
-                  <span className="shortcut-tooltip session-row__tooltip" role="tooltip">
-                    <span>{archived ? "Restore thread" : "Archive thread"}</span>
-                    {archived ? null : <kbd>{archiveThreadShortcut(threadMenu.platform)}</kbd>}
-                  </span>
+            <span className="session-row__meta">
+              {shortcutBadge ? (
+                <span className="session-row__shortcut" aria-hidden="true">
+                  {shortcutBadge.label}
+                </span>
+              ) : (
+                <span className="session-row__time">
+                  {formatRelativeTime(sessionLastInteractedAt(thread.session))}
+                </span>
+              )}
+              <span className="session-row__action-cluster">
+                {!archived ? (
+                  <button
+                    aria-label={`${pinned ? "Unpin" : "Pin"} ${thread.session.title}${actionContext}`}
+                    aria-pressed={pinned}
+                    className="icon-button session-row__action session-row__pin-action"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onTogglePinned();
+                    }}
+                  >
+                    <PinIcon filled={pinned} />
+                  </button>
                 ) : null}
+                <span className="shortcut-tooltip-wrap session-row__tooltip-wrap">
+                  <button
+                    aria-label={`${archived ? "Restore" : "Archive"} ${thread.session.title}${actionContext}`}
+                    className="icon-button session-row__action"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onAction();
+                    }}
+                  >
+                    {archived ? <RestoreIcon /> : <ArchiveIcon />}
+                  </button>
+                  {threadMenu && !overlay && !menuOpen ? (
+                    <span className="shortcut-tooltip session-row__tooltip" role="tooltip">
+                      <span>{archived ? "Restore thread" : "Archive thread"}</span>
+                      {archived ? null : <kbd>{archiveThreadShortcut(threadMenu.platform)}</kbd>}
+                    </span>
+                  ) : null}
+                </span>
               </span>
             </span>
             {threadMenu && menuOpen ? (

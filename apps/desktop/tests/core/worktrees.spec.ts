@@ -274,7 +274,25 @@ test("shows a worktree icon in the sidebar without a local text badge", async ()
     const worktreeRow = window.locator(".session-row", { hasText: "Worktree thread" });
     await expect(worktreeRow).toBeVisible();
     await expect(worktreeRow).toHaveAttribute("data-sidebar-indicator", "none");
-    await expect(worktreeRow.locator(".session-row__workspace-icon")).toHaveCount(1);
+    const marker = worktreeRow.getByRole("img", { name: "Runs in a worktree" });
+    await expect(marker).toHaveCount(1);
+    await expect(marker).toHaveAttribute("title", "Runs in a worktree");
+
+    // Hover actions share the slot the relative time occupies; the marker stays beside them.
+    await worktreeRow.hover();
+    const pinButton = worktreeRow.getByRole("button", { name: /^Pin Worktree thread/ });
+    const archiveButton = worktreeRow.getByRole("button", { name: /^Archive Worktree thread/ });
+    await expect(pinButton).toBeVisible();
+    await expect(archiveButton).toBeVisible();
+    await expect(marker).toBeVisible();
+    const markerBox = await marker.boundingBox();
+    const pinBox = await pinButton.boundingBox();
+    const archiveBox = await archiveButton.boundingBox();
+    assertExists(markerBox, "Expected worktree marker bounds");
+    assertExists(pinBox, "Expected pin action bounds");
+    assertExists(archiveBox, "Expected archive action bounds");
+    expect(markerBox.x + markerBox.width).toBeLessThanOrEqual(pinBox.x);
+    expect(pinBox.x + pinBox.width).toBeLessThanOrEqual(archiveBox.x);
     await expect(window.getByTestId("workspace-list")).not.toContainText("Local project");
   } finally {
     await harness.close();

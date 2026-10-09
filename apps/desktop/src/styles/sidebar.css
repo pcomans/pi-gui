@@ -714,6 +714,17 @@
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 4px;
+}
+
+/* Time and hover actions share this slot, so the worktree marker beside it never sits under them. */
+.session-row__meta {
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .session-row__action-cluster {
@@ -727,14 +738,10 @@
   gap: 1px;
 }
 
-.session-row:hover .session-row__trailing,
-.session-row:focus-within .session-row__trailing,
-.session-row--pinned .session-row__trailing {
+.session-row:hover .session-row__meta,
+.session-row:focus-within .session-row__meta,
+.session-row--pinned .session-row__meta {
   min-width: 52px;
-}
-
-.session-row__trailing:has(.session-row__workspace-icon) {
-  padding-left: 18px;
 }
 
 .session-row__time,
@@ -752,10 +759,7 @@
 }
 
 .session-row__workspace-icon {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  flex: none;
   width: 14px;
   height: 14px;
   display: grid;
