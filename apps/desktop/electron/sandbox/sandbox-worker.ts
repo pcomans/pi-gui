@@ -35,7 +35,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       if (child) { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
       send({ id, done: true });
     } else if (op === "read") {
-      send({ id, done: true, data: (await fs.readFile(request.path)).toString("base64") });
+      if (request.maxBytes === undefined) {
+        send({ id, done: true, data: (await fs.readFile(request.path)).toString("base64") });
+      } else {
+        const file = await fs.open(request.path, "r");
+        try {
+          const buffer = Buffer.alloc(request.maxBytes);
+          const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+          send({ id, done: true, data: buffer.subarray(0, bytesRead).toString("base64") });
+        } finally {
+          await file.close();
+        }
+      }
     } else if (op === "write") {
       await fs.writeFile(request.path, Buffer.from(request.data, "base64"));
       send({ id, done: true });
@@ -212,8 +223,12 @@ export class SandboxWorker {
     }
   }
 
-  async readFile(path: string): Promise<Buffer> {
-    const reply = await this.request({ op: "read", path });
+  async readFile(path: string, maxBytes?: number): Promise<Buffer> {
+    const reply = await this.request({
+      op: "read",
+      path,
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+    });
     return Buffer.from(reply.data ?? "", "base64");
   }
 

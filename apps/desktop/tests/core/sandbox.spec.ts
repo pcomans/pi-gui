@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { PhotonImage } from "@silvia-odwyer/photon-node";
 import {
   getDesktopState,
   launchDesktop,
@@ -85,7 +86,7 @@ export default function sandboxE2eProvider(pi) {
     api: "${PROVIDER}",
     models: [{
       id: "scripted", name: "Scripted sandbox driver", reasoning: false,
-      input: ["text"], contextWindow: 128000, maxTokens: 4096,
+      input: ["text", "image"], contextWindow: 128000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     }],
     streamSimple(model, context) {
@@ -103,7 +104,9 @@ export default function sandboxE2eProvider(pi) {
           : [{
               type: "text",
               text: "DONE " + tag + " isError=" + Boolean(result.isError) +
-                "\n\n~~~text\n" + textOf(result) + "\n~~~\n",
+                "\n\n~~~text\n" + textOf(result) + "\n~~~\n" +
+                "images=" + (result.content ?? []).filter((part) => part.type === "image")
+                  .map((part) => part.mimeType + ":" + Boolean(part.data)).join(","),
             }];
       const toolUse = content[0].type === "toolCall";
       const message = {
@@ -182,9 +185,11 @@ interface TestResources {
   /** Temp folders (as given and resolved); a sandbox mounting one of them is this test's. */
   readonly roots: string[];
   readonly apps: Set<DesktopHarness>;
+  retainArtifacts?: boolean;
 }
 
 let resources: TestResources = { roots: [], apps: new Set() };
+let retainConfigArtifacts = false;
 
 async function trackRoot(path: string): Promise<void> {
   for (const root of [path, await realpath(path)]) {
@@ -220,6 +225,11 @@ test.afterEach(async () => {
   test.setTimeout(5 * 60_000);
   for (const app of resources.apps) await app.close().catch(() => undefined);
   resources.apps.clear();
+  // Image-read proof retains its scratch state and stopped sandbox for inspection.
+  if (resources.retainArtifacts) {
+    retainConfigArtifacts = true;
+    return;
+  }
   // Only this test's sandboxes: never `sbx rm --all`, never the person's own sandboxes.
   for (const sandbox of await ownSandboxes()) {
     await execFileAsync("sbx", ["rm", "--force", sandbox.name], { timeout: 180_000 });
@@ -229,7 +239,9 @@ test.afterEach(async () => {
 });
 
 test.afterAll(async () => {
-  if (isolatedConfigDir) await rm(isolatedConfigDir, { recursive: true, force: true });
+  if (isolatedConfigDir && !retainConfigArtifacts) {
+    await rm(isolatedConfigDir, { recursive: true, force: true });
+  }
 });
 
 interface Fixture {
@@ -432,6 +444,80 @@ test("SBX-B2: a file the write tool creates in the sandbox lands in the host che
   await expect(diff).toContainText("ORIGINAL_NOTES");
   await expect(diff).toContainText("WRITTEN_IN_SANDBOX");
   await window.screenshot({ path: testInfo.outputPath("review-after-sandbox-write.png") });
+  await quit(harness);
+});
+
+test("sandbox read sends PNG and JPEG attachments from sandbox-only paths", async ({}, testInfo) => {
+  test.setTimeout(FIRST_TOOL_CALL_TIMEOUT_MS + 2 * 60_000);
+  resources.retainArtifacts = true;
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP478AARwzEcQAWohPx03ZM6QAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const image = PhotonImage.new_from_byteslice(png);
+  const jpeg = Buffer.from(image.get_bytes_jpeg(90));
+  image.free();
+  const guestDir = "/tmp/pi-gui-image-read-proof";
+  const fixture = await createFixture("sandbox-images", {
+    "image-setup": {
+      name: "bash",
+      arguments: {
+        command: `mkdir -p ${guestDir}; cp frame.png ${guestDir}/png.bin; cp frame.jpg ${guestDir}/jpeg.bin`,
+      },
+    },
+    "image-png": { name: "read", arguments: { path: `${guestDir}/png.bin` } },
+    "image-jpeg": { name: "read", arguments: { path: `${guestDir}/jpeg.bin` } },
+    "image-text": { name: "read", arguments: { path: "notes.jpg" } },
+    "image-missing": { name: "read", arguments: { path: `${guestDir}/missing.png` } },
+  });
+  await writeFile(join(fixture.workspacePath, "frame.png"), png);
+  await writeFile(join(fixture.workspacePath, "frame.jpg"), jpeg);
+  await writeFile(join(fixture.workspacePath, "notes.jpg"), "ORDINARY_TEXT_NOT_AN_IMAGE\n");
+  const harness = await launchSandboxedApp(fixture);
+  const window = await harness.firstWindow();
+  await waitForWorkspaceByPath(window, fixture.workspacePath);
+  await startThreadFromSurface(window, { prompt: "run image-setup" });
+  expect(await waitForScriptResult(window, "image-setup", FIRST_TOOL_CALL_TIMEOUT_MS)).toContain(
+    "isError=false",
+  );
+  expect(existsSync(join(guestDir, "png.bin"))).toBe(false);
+  expect(existsSync(join(guestDir, "jpeg.bin"))).toBe(false);
+
+  for (const [tag, mimeType, count] of [
+    ["image-png", "image/png", 1],
+    ["image-jpeg", "image/jpeg", 2],
+  ] as const) {
+    await sendPrompt(window, `run ${tag}`);
+    const result = await waitForScriptResult(window, tag, TOOL_CALL_TIMEOUT_MS);
+    expect(result).toContain("isError=false");
+    expect(result).toContain(`images=${mimeType}:true`);
+    const thumbs = window.getByRole("button", { name: "View read image 1", exact: true });
+    await expect(thumbs).toHaveCount(count);
+    await expect
+      .poll(() =>
+        thumbs
+          .last()
+          .locator("img")
+          .evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth),
+      )
+      .toBe(4);
+  }
+  await window.screenshot({ path: testInfo.outputPath("sandbox-read-images.png") });
+  await window.getByRole("button", { name: "View read image 1", exact: true }).last().click();
+  await expect(window.locator(".image-viewer")).toBeVisible();
+  await window.keyboard.press("Escape");
+
+  await sendPrompt(window, "run image-text");
+  expect(await waitForScriptResult(window, "image-text", TOOL_CALL_TIMEOUT_MS)).toContain(
+    "ORDINARY_TEXT_NOT_AN_IMAGE",
+  );
+  await sendPrompt(window, "run image-missing");
+  expect(await waitForScriptResult(window, "image-missing", TOOL_CALL_TIMEOUT_MS)).toContain(
+    "isError=true",
+  );
+  await expect(window.getByRole("button", { name: "View read image 1", exact: true })).toHaveCount(
+    2,
+  );
   await quit(harness);
 });
 

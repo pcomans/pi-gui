@@ -7,6 +7,7 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
+  detectPiImageMimeType,
 } from "@pi-gui/pi-sdk-driver";
 import type {
   BashOperations,
@@ -69,6 +70,9 @@ export function createSandboxExtension(
     };
     const fileOps = {
       readFile: (file: string) => use(({ worker }) => worker.readFile(file)),
+      // Match Pi's 4100-byte MIME sniff without opening a host path or transferring the file twice.
+      detectImageMimeType: (file: string) =>
+        use(async ({ worker }) => detectPiImageMimeType(await worker.readFile(file, 4100))),
       writeFile: (file: string, content: string) => {
         writable(file);
         return use(({ worker }) => worker.writeFile(file, content));
