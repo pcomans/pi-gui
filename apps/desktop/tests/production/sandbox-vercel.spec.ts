@@ -10,7 +10,6 @@ import {
   makeUserDataDir,
   seedAgentDir,
   selectSidePanel,
-  selectSession,
   startThreadFromSurface,
   waitForTimelineLayout,
   type DesktopHarness,
@@ -217,11 +216,11 @@ test("remote workspace: tools, Files, Review, staging, PTY, Stop and persistent 
       restarted.getByTestId("file-explorer").locator('[data-file-path="fork.txt"]'),
     ).toBeVisible();
     await restarted.screenshot({ path: testInfo.outputPath("remote-fork.png") });
-    const state = await getDesktopState(restarted);
-    const sourceTitle = state.workspaces
-      .find((entry) => entry.id === workspace.id)!
-      .sessions.find((entry) => entry.id === sourceSessionId)!.title;
-    await selectSession(restarted, sourceTitle);
+    // A fork inherits its source's title; select the source by its stable sidebar identity.
+    await restarted.locator(`[data-session-id="${sourceSessionId}"] .session-row__select`).click();
+    await expect
+      .poll(async () => (await getDesktopState(restarted)).selectedSessionId)
+      .toBe(sourceSessionId);
     await send(restarted, "run source");
     const unchanged = await result(restarted, "source");
     expect(unchanged).toContain("EDITED_REMOTE");
