@@ -47,6 +47,18 @@ export interface SandboxConnection {
   readonly env: Readonly<Record<string, string>>;
 }
 
+export interface ToolSandboxSession {
+  readonly ref: SandboxSessionRef;
+  readonly checkoutPath: string;
+  readonly state: SandboxSessionState;
+  readonly message: string | undefined;
+  readonly sandbox: string | undefined;
+  use<T>(work: (connection: SandboxConnection) => Promise<T>): Promise<T>;
+  setReadonlyMounts(paths: readonly string[]): void;
+  stop(): Promise<void>;
+  close(stopSandboxToo: boolean): Promise<void>;
+}
+
 /**
  * The Docker sandbox behind one pi session. It mounts the session's checkout at the same path it
  * has on the host (plus a linked worktree's shared git directory, and read-only other worktrees'

@@ -2,13 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
 
 /**
  * Runs inside the sandbox (`node -e`), started once per thread with `sbx exec -i`. It answers
  * JSON lines on stdin, so file operations and commands do not pay for a new `sbx exec` each.
  * Commands get their own process group, so a cancel kills everything they started.
  */
-const WORKER_SOURCE = String.raw`
+export const WORKER_SOURCE = String.raw`
 "use strict";
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
@@ -56,6 +57,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     } else if (op === "access") {
       await fs.access(request.path, request.mode);
       send({ id, done: true });
+    } else if (op === "upload") {
+      const path = require("node:path");
+      for (const file of request.files) {
+        await fs.mkdir(path.dirname(file.path), { recursive: true });
+        await fs.unlink(file.path).catch((error) => { if (error.code !== "ENOENT") throw error; });
+        if (file.link !== undefined) await fs.symlink(file.link, file.path);
+        else {
+          await fs.writeFile(file.path, Buffer.from(file.data, "base64"));
+          await fs.chmod(file.path, file.mode);
+        }
+      }
+      send({ id, done: true });
     } else {
       failure(id, new Error("unknown op " + op));
     }
@@ -63,10 +76,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     failure(id, error);
   }
 });
-process.stdin.on("end", () => {
+const shutdown = () => {
   for (const child of running.values()) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
   process.exit(0);
-});
+};
+process.stdin.on("end", shutdown);
+process.on("SIGTERM", shutdown);
 send({ ready: true });
 `;
 
@@ -85,6 +100,14 @@ interface WorkerReply {
 interface Pending {
   readonly onReply: (reply: WorkerReply) => void;
   readonly onClosed: (error: Error) => void;
+}
+
+/** The same worker protocol runs over either sbx stdio or Vercel's command streams. */
+export interface WorkerTransport {
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly closed: Promise<Error>;
+  close(): void;
 }
 
 export interface WorkerExecOptions {
@@ -111,7 +134,7 @@ export class SandboxWorker {
   private readonly pending = new Map<string, Pending>();
   private ended: Error | undefined;
 
-  private constructor(private readonly child: ChildProcessWithoutNullStreams) {
+  private constructor(private readonly transport: WorkerTransport) {
     this.closed = new Promise((resolve) => {
       const end = (error: Error) => {
         if (this.ended) return;
@@ -120,14 +143,11 @@ export class SandboxWorker {
         this.pending.clear();
         resolve(error);
       };
-      child.on("error", (error) => end(error));
-      child.on("close", (code, signal) =>
-        end(new Error(`The sandbox connection ended (${signal ?? `exit ${code}`}).`)),
-      );
+      transport.closed.then(end).catch((error: unknown) => end(new Error(String(error))));
     });
     let markReady: () => void = () => undefined;
     this.ready = new Promise((resolve) => (markReady = resolve));
-    createInterface({ input: child.stdout }).on("line", (line) => {
+    createInterface({ input: transport.stdout }).on("line", (line) => {
       let reply: WorkerReply;
       try {
         reply = JSON.parse(line) as WorkerReply;
@@ -155,9 +175,35 @@ export class SandboxWorker {
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
-    const worker = new SandboxWorker(child);
+    const closed = new Promise<Error>((resolve) => {
+      child.on("error", resolve);
+      child.on("close", (code, signal) =>
+        resolve(new Error(`The sandbox connection ended (${signal ?? `exit ${code}`}).`)),
+      );
+    });
+    return SandboxWorker.connect(
+      {
+        stdin: child.stdin,
+        stdout: child.stdout,
+        closed,
+        close: () => {
+          child.stdin.end();
+          child.kill();
+        },
+      },
+      timeoutMs,
+      child,
+    );
+  }
+
+  static async connect(
+    transport: WorkerTransport,
+    timeoutMs = 60_000,
+    child?: ChildProcessWithoutNullStreams,
+  ): Promise<SandboxWorker> {
+    const worker = new SandboxWorker(transport);
     let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
+    child?.stderr.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-2_000);
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -184,8 +230,7 @@ export class SandboxWorker {
   }
 
   close(): void {
-    this.child.stdin.end();
-    this.child.kill();
+    this.transport.close();
   }
 
   async exec(
@@ -236,6 +281,15 @@ export class SandboxWorker {
     await this.request({ op: "write", path, data: Buffer.from(content).toString("base64") });
   }
 
+  async writeFiles(
+    files: readonly { path: string; content: Buffer; mode: number; link?: string }[],
+  ): Promise<void> {
+    await this.request({
+      op: "upload",
+      files: files.map(({ content, ...file }) => ({ ...file, data: content.toString("base64") })),
+    });
+  }
+
   async mkdir(path: string): Promise<void> {
     await this.request({ op: "mkdir", path });
   }
@@ -265,7 +319,7 @@ export class SandboxWorker {
       this.pending.get(String(message.id))?.onClosed(this.ended);
       return;
     }
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    this.transport.stdin.write(`${JSON.stringify(message)}\n`);
   }
 }
 

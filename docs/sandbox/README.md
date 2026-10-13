@@ -71,3 +71,91 @@ pi-gui reads `sbx policy log` while sandboxes are open and adds its counts to a 
 - `pnpm test:desktop-unit` covers the settings store and which `node_modules` folders are mounted.
 - `pnpm --filter @pi-gui/desktop test:sandbox` drives the extension against real `sbx` sandboxes (needs `sbx` signed in); it removes only the sandboxes it created.
 - `apps/desktop/tests/core/sandbox.spec.ts` drives the built app with a scripted provider; it runs only with `PI_APP_SANDBOX_E2E=1` on a machine where `sbx` is ready.
+
+## Vercel Sandbox POC
+
+An opt-in remote backend keeps Pi, model connections, session history, MCP servers and extension
+tools on the host, while the built-in tools and `!` commands run in one persistent Vercel Sandbox
+per thread. Docker remains the default. Launch the development app with:
+
+```sh
+vercel login
+PI_APP_SANDBOX_BACKEND=vercel \
+VERCEL_TEAM_ID=team_your_team \
+VERCEL_PROJECT_ID=prj_your_project \
+pnpm dev
+```
+
+The main process uses `VERCEL_TOKEN` if supplied through your secret manager; otherwise it reads
+the existing Vercel CLI login. Credentials stay on the host. Settings > Sandbox identifies the
+active backend and its limitations. The SDK dependency includes piped stdin for the existing
+JSON-line worker; command cancellation still kills the entire process group.
+
+The first tool call uploads the checkout at the same absolute path and creates an independent Git
+repository from its current files. Before and after each operation, three-way synchronization
+compares the last shared version with the local and remote files. Changes made through bash are
+included, along with binary files, executable permissions and deletions. Synchronization finishes
+before tool results return, so Review and turn captures see the changes. Local/remote conflicts
+fail the tool without overwriting local edits, and save remote versions under
+`<userData>/sandbox/vercel/<thread>/recovery/`. Matching the local file to the remote version
+resolves a conflict on the next call. Backups of overwritten/deleted local files are also retained
+there. No uncertain tool operation is automatically replayed after a connection failure.
+
+Sandboxes stop after 10 idle minutes or on thread close/app quit. Each VM session is configured for
+30 minutes, and the app stops/resumes between operations when less than two minutes remain. The
+filesystem and Linux dependencies persist; the worker starts again after resume. A tool still
+running at the deadline is interrupted, rather than migrated or repeated. Snapshots have no
+expiration in this POC; retained compute and snapshot storage are billed to the selected project.
+Stopping removes running-compute usage, but retained snapshot storage continues to accrue charges.
+
+POC boundaries:
+
+- Requires a Git checkout. Transfers tracked and nonignored untracked files, capped at 10,000 files,
+  64 MiB total and 16 MiB per file. `node_modules`, `.git`, `.context` and `.artifacts` are excluded.
+- Supports relative symlinks within the checkout; rejects directory traversal, synchronization
+  through directory symlinks, links outside the checkout and filenames that collide when case is
+  ignored. Host dependencies and ignored build outputs stay local.
+- Commits, branch changes, Git history, the index and Git credentials do not synchronize. Commit
+  through the host terminal. Linked worktrees upload their files to independent remote repos.
+- Global skills outside the checkout, local services, GitHub credential brokering, the outbound-host
+  log and network-rule editing are outside this POC. The remote sandbox has Internet access.
+  Repositories with saved blocked-host rules fail closed rather than ignoring those rules.
+- File transfer runs at operation boundaries, not continuously during a long-running command.
+  Synchronization is bounded and conflict-aware, but does not provide a filesystem transaction
+  across concurrent local editors or background processes.
+- Remote sandbox removal is manual; the app retains stopped sandboxes and recovery artifacts.
+  This backend has not established production or packaged-app readiness.
+
+For repeatable proof with a scripted Pi provider, real cloud infrastructure and visible Electron:
+
+```sh
+PI_APP_VERCEL_SANDBOX_E2E=1 \
+VERCEL_TEAM_ID=team_your_team \
+VERCEL_PROJECT_ID=prj_your_project \
+pnpm --filter @pi-gui/desktop run test:e2e:runner -- \
+  apps/desktop/tests/production/sandbox-vercel.spec.ts \
+  --output .context/vercel-sandbox-proof
+```
+
+This test requires working Vercel authentication and incurs Sandbox usage. It verifies remote
+bash/write/edit, local Review, Last turn, Stop including child processes, concurrent-edit recovery,
+and persistence after app restart. It retains its scratch checkout, profile and stopped sandbox.
+The unit lane covers synchronization independently of cloud access. The credential-free Core
+spec checks missing configuration and saved blocked-host rules on the actual Settings surface,
+and verifies failed sandbox tools never fall back to the host.
+
+To include the separate real-model Electron proof, add these environment variables to the cloud
+test command above, using an agent directory with working credentials:
+
+```sh
+PI_APP_REAL_AUTH=1 \
+PI_APP_REAL_AUTH_SOURCE_DIR="$HOME/.pi/agent" \
+PI_GUI_PROVIDER=vercel-ai-gateway \
+PI_GUI_MODEL=anthropic/claude-haiku-4.5
+```
+
+That proof runs without test mode or main-process test hooks. It requires a visible, focused app,
+actual remote bash/read output, a local file side effect and Last Turn Review. It copies only the
+selected provider's auth into a private temporary directory outside the evidence folder and
+retains it. This is targeted tool-sandbox coverage; the full `verify-pi-gui` conversation recipe,
+native OS interactions and packaged launch remain separate lanes.

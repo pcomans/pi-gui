@@ -65,14 +65,18 @@ export function SettingsSandboxSection() {
     return error ? (
       <p className="settings-warning">{error}</p>
     ) : (
-      <p className="settings-row__description">Checking Docker Sandboxes…</p>
+      <p className="settings-row__description">Checking sandbox configuration…</p>
     );
   }
   return (
     <>
       <SettingsGroup
         title="Tool sandbox"
-        description="pi's read, write, edit and bash tools run in each thread's own Docker sandbox (a Linux microVM) that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
+        description={
+          snapshot.backend.provider === "vercel"
+            ? "Vercel Sandbox POC: tools run remotely and source changes sync back after each operation. Pi, models, MCP servers and extensions stay on this computer. Ignored files and Git commits are not synchronized."
+            : "pi's read, write, edit and bash tools run in each thread's own Docker sandbox (a Linux microVM) that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
+        }
       >
         {error ? (
           <div className="settings-row">
@@ -94,7 +98,12 @@ export function SettingsSandboxSection() {
             onChange={(enabled) => update({ kind: "enabled", enabled })}
           />
         </SettingsRow>
-        <SettingsRow title="Docker Sandboxes" description={backendDescription(snapshot)}>
+        <SettingsRow
+          title={
+            snapshot.backend.provider === "vercel" ? "Vercel Sandbox (POC)" : "Docker Sandboxes"
+          }
+          description={backendDescription(snapshot)}
+        >
           {snapshot.backend.state === "ready" ? null : (
             <button
               className="button button--secondary"
@@ -110,36 +119,45 @@ export function SettingsSandboxSection() {
           )}
         </SettingsRow>
         <SettingsRow title="Threads" description={sessionSummary(snapshot)} />
-        <SettingsRow
-          title="Sandboxes"
-          description={`${snapshot.sandboxes.total} created by pi-gui, ${snapshot.sandboxes.running} running. Each thread keeps its own until it is removed; removing unused ones frees disk space, and a thread that needs one again gets a fresh sandbox.`}
-        >
-          <button
-            className="button button--secondary"
-            disabled={pending || snapshot.sandboxes.unused === 0}
-            type="button"
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Remove ${snapshot.sandboxes.unused} ${snapshot.sandboxes.unused === 1 ? "sandbox" : "sandboxes"} no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
-                )
-              ) {
-                update({ kind: "remove-unused-sandboxes" });
-              }
-            }}
+        {snapshot.backend.provider === "vercel" ? (
+          <SettingsRow
+            title="Remote workspaces"
+            description="Persistent sandboxes resume with their files and dependencies. Running sessions recycle between operations near their deadline. This POC uses Internet access without the Docker host log or local-service forwarding; usage is billed to the configured Vercel project."
+          />
+        ) : (
+          <SettingsRow
+            title="Sandboxes"
+            description={`${snapshot.sandboxes.total} created by pi-gui, ${snapshot.sandboxes.running} running. Each thread keeps its own until it is removed; removing unused ones frees disk space, and a thread that needs one again gets a fresh sandbox.`}
           >
-            Remove {snapshot.sandboxes.unused} unused
-          </button>
-        </SettingsRow>
+            <button
+              className="button button--secondary"
+              disabled={pending || snapshot.sandboxes.unused === 0}
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Remove ${snapshot.sandboxes.unused} ${snapshot.sandboxes.unused === 1 ? "sandbox" : "sandboxes"} no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
+                  )
+                ) {
+                  update({ kind: "remove-unused-sandboxes" });
+                }
+              }}
+            >
+              Remove {snapshot.sandboxes.unused} unused
+            </button>
+          </SettingsRow>
+        )}
       </SettingsGroup>
 
-      <SettingsGroup
-        plain
-        title="Network"
-        description="Sandboxes can reach any host you have not blocked; services on this Mac (host.docker.internal, localhost) stay blocked unless you allow them. Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
-      >
-        {null}
-      </SettingsGroup>
+      {snapshot.backend.provider !== "vercel" ? (
+        <SettingsGroup
+          plain
+          title="Network"
+          description="Sandboxes can reach any host you have not blocked; services on this Mac (host.docker.internal, localhost) stay blocked unless you allow them. Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
+        >
+          {null}
+        </SettingsGroup>
+      ) : null}
 
       {snapshot.repos.map((repo) => (
         <SandboxRepoGroup disabled={pending} key={repo.repoPath} repo={repo} onUpdate={update} />

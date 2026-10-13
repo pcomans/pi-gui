@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { nodeModulesDirs, nodeModulesMountScript } from "../../electron/sandbox/sandbox-setup";
+import {
+  nodeModulesDirs,
+  nodeModulesMountScript,
+  sandboxSetupScript,
+} from "../../electron/sandbox/sandbox-setup";
 
 const checkout = "/Users/me/Library/Application Support/pi/worktrees/repo";
 
@@ -44,3 +48,12 @@ test("the mount script quotes paths and skips folders already mounted", () => {
 function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+test("managed images keep their pnpm while still running the project's setup", () => {
+  const config = { packages: ["build-essential"], setup: "echo PROJECT_SETUP" };
+  expect(sandboxSetupScript(config)).toContain("npm install --global");
+  const managed = sandboxSetupScript(config, false);
+  expect(managed).not.toContain("npm install --global");
+  expect(managed).toContain("install -y -qq build-essential");
+  expect(managed).toContain("echo PROJECT_SETUP");
+});

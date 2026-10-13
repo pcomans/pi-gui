@@ -17,16 +17,17 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { SANDBOX_STATUS_KEY, type SandboxSessionState } from "../../contracts/sandbox";
-import type { SandboxConnection, SandboxSession, SandboxSessionRef } from "./sandbox-session";
+import type { SandboxConnection, ToolSandboxSession, SandboxSessionRef } from "./sandbox-session";
 
 export interface SandboxExtensionHost {
+  readonly prompt?: string;
   enabled(): boolean;
   openSession(
     ref: SandboxSessionRef,
     checkoutPath: string,
     onStatus: (state: SandboxSessionState, message?: string) => void,
-  ): SandboxSession;
-  closeSession(session: SandboxSession): void;
+  ): ToolSandboxSession;
+  closeSession(session: ToolSandboxSession): void;
 }
 
 const STATUS_TEXT: Record<SandboxSessionState, string> = {
@@ -50,7 +51,7 @@ export function createSandboxExtension(
       return;
     }
     const cwd = workspace.path;
-    let session: SandboxSession | undefined;
+    let session: ToolSandboxSession | undefined;
     let context: ExtensionContext | undefined;
 
     const use = <T>(work: (connection: SandboxConnection) => Promise<T>): Promise<T> => {
@@ -152,7 +153,7 @@ export function createSandboxExtension(
           path.basename(skill.filePath) === "SKILL.md" ? skill.baseDir : skill.filePath,
         ),
       );
-      return { systemPrompt: `${event.systemPrompt}\n\n${SANDBOX_PROMPT}` };
+      return { systemPrompt: `${event.systemPrompt}\n\n${host.prompt ?? SANDBOX_PROMPT}` };
     });
 
     pi.registerCommand("sandbox", {

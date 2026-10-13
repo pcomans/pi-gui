@@ -85,6 +85,7 @@ export interface SandboxSnapshot {
   readonly supported: boolean;
   readonly enabled: boolean;
   readonly backend: {
+    readonly provider?: "sbx" | "vercel";
     readonly state: SandboxBackendState;
     readonly message?: string;
     readonly installHint: string;

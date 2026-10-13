@@ -22,8 +22,13 @@ import {
   threadPrefix,
   type SbxStatus,
 } from "./sandbox-sbx";
-import { SandboxSession, type SandboxSessionRef } from "./sandbox-session";
+import { SandboxSession, type SandboxSessionRef, type ToolSandboxSession } from "./sandbox-session";
 import { SandboxSettingsStore } from "./sandbox-settings-store";
+import {
+  VercelSandboxSession,
+  vercelSandboxCredentials,
+  VERCEL_SANDBOX_PROMPT,
+} from "./sandbox-vercel";
 
 export interface SandboxOwnerOptions {
   readonly userDataDir: string;
@@ -36,13 +41,14 @@ const LOG_POLL_MS = 5_000;
 const STATUS_CACHE_MS = 30_000;
 
 /**
- * Owns pi-gui's tool sandbox: preferences and the network log, and the Docker sandbox (sbx)
- * behind each open session. Sessions get it through a hidden extension that users cannot
+ * Owns pi-gui's tool sandboxes: preferences, sbx network logs, and the backend behind each
+ * open session. Sessions get it through a hidden extension that users cannot
  * switch off; turning the sandbox off happens here, in Settings.
  */
 export class SandboxOwner {
   private readonly store: SandboxSettingsStore;
-  private readonly sessions = new Set<SandboxSession>();
+  private readonly sessions = new Set<ToolSandboxSession>();
+  private readonly vercel = process.env.PI_APP_SANDBOX_BACKEND === "vercel";
   private readonly knownRepos = new Set<string>();
   /** Sandbox name → the repository and thread it serves, for attributing sbx's log. */
   private readonly sandboxThreads = new Map<
@@ -62,7 +68,7 @@ export class SandboxOwner {
 
   async initialize(): Promise<void> {
     await this.store.load();
-    if (this.enabled()) {
+    if (this.enabled() && !this.vercel) {
       // No thread uses a sandbox yet, so running pi-gui sandboxes were left by a crash.
       this.stopLeftoverSandboxes().catch((error: unknown) =>
         console.error("[sandbox] stop leftovers", error),
@@ -71,7 +77,10 @@ export class SandboxOwner {
   }
 
   enabled(): boolean {
-    return sandboxPlatformSupported() && this.store.enabled(this.options.enabledByDefault);
+    return (
+      (this.vercel || sandboxPlatformSupported()) &&
+      this.store.enabled(this.options.enabledByDefault)
+    );
   }
 
   sessionExtensions(workspace: WorkspaceRef): InlineExtension[] {
@@ -80,6 +89,7 @@ export class SandboxOwner {
         name: "pi-gui-sandbox",
         hidden: true,
         factory: createSandboxExtension(workspace, {
+          ...(this.vercel ? { prompt: VERCEL_SANDBOX_PROMPT } : {}),
           enabled: () => this.enabled(),
           openSession: (ref, checkoutPath, onStatus) =>
             this.openSession(ref, checkoutPath, onStatus),
@@ -94,6 +104,33 @@ export class SandboxOwner {
   }
 
   async snapshot(): Promise<SandboxSnapshot> {
+    if (this.vercel) {
+      const error = await vercelSandboxCredentials().then(
+        () => undefined,
+        (error: unknown) => String(error),
+      );
+      return {
+        supported: true,
+        enabled: this.enabled(),
+        backend: {
+          provider: "vercel",
+          state: error ? "unavailable" : "ready",
+          ...(error ? { message: error } : {}),
+          installHint: "vercel login",
+        },
+        sandboxes: {
+          total: [...this.sessions].filter((s) => s.sandbox).length,
+          running: [...this.sessions].filter((s) => s.state === "ready").length,
+          unused: 0,
+        },
+        repos: [],
+        sessions: [...this.sessions].map((session) => ({
+          ...session.ref,
+          state: session.state,
+          ...(session.message ? { message: session.message } : {}),
+        })),
+      };
+    }
     const status = await this.sbxStatus(true);
     const ready = status.state === "ready" ? status.binary : undefined;
     const [listed] = ready
@@ -131,11 +168,14 @@ export class SandboxOwner {
   }
 
   async update(update: SandboxSettingsUpdate): Promise<SandboxSnapshot> {
+    if (this.vercel && update.kind !== "enabled")
+      throw new Error("Network rules and sandbox removal are not available in the Vercel POC.");
     if (update.kind === "remove-unused-sandboxes") {
       await this.removeUnusedSandboxes();
     } else {
       await this.store.update(update);
-      await this.reapplyNetworkRules(update.kind === "host-rule" ? update.repoPath : undefined);
+      if (!this.vercel)
+        await this.reapplyNetworkRules(update.kind === "host-rule" ? update.repoPath : undefined);
     }
     this.changed();
     return this.snapshot();
@@ -174,7 +214,28 @@ export class SandboxOwner {
     ref: SandboxSessionRef,
     checkoutPath: string,
     onStatus: (state: SandboxSessionState, message?: string) => void,
-  ): SandboxSession {
+  ): ToolSandboxSession {
+    if (this.vercel) {
+      const session = new VercelSandboxSession(
+        ref,
+        checkoutPath,
+        this.options.userDataDir,
+        (repoPath) => {
+          if (this.store.rulesFor(repoPath).blockedHosts.length > 0) {
+            throw new Error(
+              "This repository has blocked hosts. The Vercel POC cannot enforce these rules; use sbx for this repository.",
+            );
+          }
+        },
+        (state, message) => {
+          onStatus(state, message);
+          this.changed();
+        },
+      );
+      this.sessions.add(session);
+      this.changed();
+      return session;
+    }
     const session = new SandboxSession(
       ref,
       checkoutPath,

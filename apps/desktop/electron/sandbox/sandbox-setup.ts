@@ -61,9 +61,14 @@ export async function readProjectSandboxConfig(
  * Root script that prepares a new sandbox: pnpm, git settings, then the project's packages and
  * setup. A marker per script makes it run once per sandbox, even if the thread reconnects.
  */
-export function sandboxSetupScript(config: ProjectSandboxConfig | undefined): string {
+export function sandboxSetupScript(
+  config: ProjectSandboxConfig | undefined,
+  installPnpm = true,
+): string {
   const body = [
-    `npm install --global --prefix /usr/local --silent pnpm@${PNPM_VERSION}`,
+    ...(installPnpm
+      ? [`npm install --global --prefix /usr/local --silent pnpm@${PNPM_VERSION}`]
+      : []),
     // The checkout is the person's; git in the sandbox must not refuse it as foreign.
     "git config --system --add safe.directory '*'",
     // Other worktrees' checkouts are not mounted; never prune them as missing.
