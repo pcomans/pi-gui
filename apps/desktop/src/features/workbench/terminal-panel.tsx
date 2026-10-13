@@ -20,14 +20,14 @@ import { terminalThemeFor } from "./terminal-theme";
 interface TerminalPanelProps {
   readonly workspace: WorkspaceRecord;
   readonly sessionId: string;
-  /** The thread's tools run in a sandbox; this terminal still runs on the host. */
+  /** The terminal shares the selected thread's sandbox. */
   readonly sandboxed: boolean;
   readonly onHide: () => void;
 }
 
 export function TerminalPanel({ workspace, sessionId, sandboxed, onHide }: TerminalPanelProps) {
   const api = window.piApp;
-  const sandboxNotice = terminalSandboxNotice(sandboxed, api?.platform ?? "");
+  const sandboxNotice = terminalSandboxNotice(sandboxed);
   const panelRef = useRef<HTMLElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);

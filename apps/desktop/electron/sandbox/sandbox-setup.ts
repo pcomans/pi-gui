@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-/** pnpm switches to a repository's pinned `packageManager` version on its own. */
-const PNPM_VERSION = "12.10.1";
 const PACKAGE_NAME = /^[a-z0-9][a-z0-9+._-]*$/;
 
 /** `.pi/sandbox.json`: what a project adds to the sandbox image. */
@@ -61,18 +59,8 @@ export async function readProjectSandboxConfig(
  * Root script that prepares a new sandbox: pnpm, git settings, then the project's packages and
  * setup. A marker per script makes it run once per sandbox, even if the thread reconnects.
  */
-export function sandboxSetupScript(
-  config: ProjectSandboxConfig | undefined,
-  installPnpm = true,
-): string {
+export function sandboxSetupScript(config: ProjectSandboxConfig | undefined): string {
   const body = [
-    ...(installPnpm
-      ? [`npm install --global --prefix /usr/local --silent pnpm@${PNPM_VERSION}`]
-      : []),
-    // The checkout is the person's; git in the sandbox must not refuse it as foreign.
-    "git config --system --add safe.directory '*'",
-    // Other worktrees' checkouts are not mounted; never prune them as missing.
-    "git config --system gc.worktreePruneExpire never",
     ...(config && config.packages.length > 0
       ? [
           "export DEBIAN_FRONTEND=noninteractive",
@@ -91,38 +79,4 @@ export function sandboxSetupScript(
     `mkdir -p /var/lib/pi-gui`,
     `touch ${marker}`,
   ].join("\n");
-}
-
-/**
- * `node_modules` folders the sandbox keeps to itself: the checkout's own and one beside every
- * git-tracked `package.json`, so Linux installs never replace the host's native builds.
- * `trackedFiles` are paths relative to the checkout, as `git ls-files` prints them.
- */
-export function nodeModulesDirs(checkoutPath: string, trackedFiles: readonly string[]): string[] {
-  const dirs = trackedFiles
-    .filter((file) => path.posix.basename(file) === "package.json")
-    .map((file) => path.posix.dirname(file))
-    .filter((dir) => !dir.split("/").includes("node_modules"));
-  return [...new Set(["", ...dirs.filter((dir) => dir !== ".")])]
-    .sort()
-    .map((dir) => path.join(checkoutPath, dir, "node_modules"));
-}
-
-/**
- * Root script that bind-mounts a sandbox-local folder over each of `dirs` (which must exist).
- * Mounts end when the sandbox stops, so this runs on every start; mounted folders are skipped.
- */
-export function nodeModulesMountScript(dirs: readonly string[]): string {
-  return [
-    "set -eu",
-    ...dirs.map((dir) => {
-      const own = `/var/lib/pi-gui/node_modules/${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
-      const target = shellQuote(dir);
-      return `mountpoint -q ${target} || { mkdir -p ${own} && chown agent:agent ${own} && mount --bind ${own} ${target}; }`;
-    }),
-  ].join("\n");
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }

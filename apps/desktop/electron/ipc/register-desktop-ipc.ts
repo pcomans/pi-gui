@@ -18,7 +18,7 @@ import {
 } from "../../contracts/ipc";
 import type { DesktopAppStore } from "../application/app-store";
 import type { NotificationPermissionService } from "../platform/notification-permission";
-import type { TerminalService } from "../platform/terminal-service";
+import type { RemoteTerminalService } from "../sandbox/remote-terminal";
 import type { ThemeManager } from "../platform/theme-manager";
 import type { WindowOwner } from "../windows/window-owner";
 import type { SandboxOwner } from "../sandbox/sandbox-owner";
@@ -42,7 +42,6 @@ import {
   expectMcpServerScope,
   expectModelSettingsScopeMode,
   expectNewMcpServerInput,
-  expectSandboxSettingsUpdate,
   expectNavigateSessionTreeOptions,
   expectNonEmptyString,
   expectNotificationPreferences,
@@ -179,7 +178,7 @@ export interface DesktopIpcOwners {
   readonly orchestration: OrchestrationOwner;
   readonly scheduledTasks: ScheduledTaskOwner;
   readonly settings: SettingsOwner;
-  readonly sandbox: Pick<SandboxOwner, "snapshot" | "update" | "prepare">;
+  readonly sandbox: Pick<SandboxOwner, "snapshot">;
   readonly composerDraftFlush: Pick<PendingComposerDraftFlusher, "acknowledge" | "flush">;
 }
 
@@ -195,8 +194,8 @@ export interface DesktopIpcCapabilities {
     input: CustomProviderProbeInput,
   ) => Promise<CustomProviderProbeResult>;
   readonly notificationPermission: () => NotificationPermissionService | undefined;
-  readonly terminal: () => TerminalService;
-  readonly optionalTerminal: () => TerminalService | undefined;
+  readonly terminal: () => RemoteTerminalService;
+  readonly optionalTerminal: () => RemoteTerminalService | undefined;
   readonly setTerminalFocused: (webContentsId: number, focused: boolean) => void;
   readonly setSidePanelFocused: (webContentsId: number, focused: boolean) => void;
   readonly setTransparency: (enabled: boolean) => void;
@@ -211,15 +210,27 @@ export interface DesktopIpcCapabilities {
   readonly listWorkspaceFiles: (
     workspacePath: string,
     options?: { readonly force?: boolean },
+    target?: SessionRef,
   ) => Promise<readonly unknown[]>;
-  readonly readWorkspaceFile: (workspacePath: string, filePath: string) => Promise<unknown>;
-  readonly revealWorkspaceFile: (workspacePath: string, filePath: string) => Promise<void>;
-  readonly getChangedFiles: (workspacePath: string) => Promise<ChangedFilesResult>;
-  readonly getFileDiff: (workspacePath: string, filePath: string) => Promise<string>;
+  readonly readWorkspaceFile: (
+    workspacePath: string,
+    filePath: string,
+    target?: SessionRef,
+  ) => Promise<unknown>;
+  readonly getChangedFiles: (
+    workspacePath: string,
+    target?: SessionRef,
+  ) => Promise<ChangedFilesResult>;
+  readonly getFileDiff: (
+    workspacePath: string,
+    filePath: string,
+    target?: SessionRef,
+  ) => Promise<string>;
   readonly stageFile: (
     workspacePath: string,
     filePath: string,
     options: { readonly sourcePath?: string },
+    target?: SessionRef,
   ) => Promise<void>;
   readonly relaunchApplication: () => void;
 }
@@ -321,7 +332,14 @@ export function registerDesktopIpc({
   );
 
   ipcMain.handle(desktopIpc.addWorkspacePath, (event, rawPath: unknown) =>
-    run(event, () => owners.workspace.addWorkspace(expectNonEmptyString(rawPath, "workspacePath"))),
+    run(event, async () => {
+      const state = await owners.workspace.addWorkspace(
+        expectNonEmptyString(rawPath, "repositoryUrl"),
+      );
+      if (!state.lastError && state.selectedWorkspaceId)
+        event.sender.send(desktopIpc.workspacePicked, state.selectedWorkspaceId);
+      return state;
+    }),
   );
   ipcMain.handle(desktopIpc.pickWorkspace, (event) =>
     capabilities.pickWorkspace(senderWindow(windows, event)),
@@ -354,15 +372,6 @@ export function registerDesktopIpc({
       owners.conversation.reorderPinnedSessions(expectStringArray(rawOrder, "order")),
     ),
   );
-  ipcMain.handle(desktopIpc.openWorkspaceInFinder, async (event, rawWorkspaceId: unknown) => {
-    windows.windowForSender(event.sender);
-    const workspaceId = expectNonEmptyString(rawWorkspaceId, "workspaceId");
-    const workspacePath = owners.workspace.getWorkspacePath(workspaceId);
-    if (!workspacePath) {
-      throw new Error(`Unknown workspace: ${workspaceId}`);
-    }
-    await shell.openPath(workspacePath);
-  });
   ipcMain.handle(desktopIpc.createWorktree, (event, rawInput: unknown) =>
     run(event, () => owners.workspace.createWorktree(expectCreateWorktreeInput(rawInput))),
   );
@@ -589,14 +598,6 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.getSandboxSnapshot, (event) => {
     windows.windowForSender(event.sender);
     return owners.sandbox.snapshot();
-  });
-  ipcMain.handle(desktopIpc.updateSandboxSettings, (event, rawUpdate: unknown) => {
-    windows.windowForSender(event.sender);
-    return owners.sandbox.update(expectSandboxSettingsUpdate(rawUpdate));
-  });
-  ipcMain.handle(desktopIpc.prepareSandbox, (event) => {
-    windows.windowForSender(event.sender);
-    return owners.sandbox.prepare();
   });
   ipcMain.handle(desktopIpc.listMcpServers, (event, rawWorkspaceId: unknown) => {
     windows.windowForSender(event.sender);
@@ -1013,7 +1014,7 @@ function registerTerminalIpc(windows: WindowOwner, capabilities: DesktopIpcCapab
         ),
   );
   ipcMain.handle(desktopIpc.terminalWrite, (event, rawTerminalId: unknown, rawData: unknown) => {
-    capabilities
+    return capabilities
       .optionalTerminal()
       ?.write(
         windows.windowForSender(event.sender).webContents,
@@ -1022,7 +1023,7 @@ function registerTerminalIpc(windows: WindowOwner, capabilities: DesktopIpcCapab
       );
   });
   ipcMain.handle(desktopIpc.terminalResize, (event, rawTerminalId: unknown, rawSize: unknown) => {
-    capabilities
+    return capabilities
       .optionalTerminal()
       ?.resize(
         windows.windowForSender(event.sender).webContents,
@@ -1087,7 +1088,11 @@ function registerWorkspaceFileIpc(
         return [];
       }
       const options = expectWorkspaceFileListOptions(rawOptions);
-      return capabilities.listWorkspaceFiles(workspacePath, options);
+      return capabilities.listWorkspaceFiles(
+        workspacePath,
+        options,
+        windows.targetForSender(event.sender),
+      );
     },
   );
   ipcMain.handle(
@@ -1099,19 +1104,11 @@ function registerWorkspaceFileIpc(
       if (!workspacePath) {
         throw new Error(`Unknown workspace: ${workspaceId}`);
       }
-      return capabilities.readWorkspaceFile(workspacePath, expectString(rawFilePath, "filePath"));
-    },
-  );
-  ipcMain.handle(
-    desktopIpc.revealWorkspaceFile,
-    async (event, rawWorkspaceId: unknown, rawFilePath: unknown) => {
-      windows.windowForSender(event.sender);
-      const workspaceId = expectNonEmptyString(rawWorkspaceId, "workspaceId");
-      const workspacePath = workspace.getWorkspacePath(workspaceId);
-      if (!workspacePath) {
-        throw new Error(`Unknown workspace: ${workspaceId}`);
-      }
-      await capabilities.revealWorkspaceFile(workspacePath, expectString(rawFilePath, "filePath"));
+      return capabilities.readWorkspaceFile(
+        workspacePath,
+        expectString(rawFilePath, "filePath"),
+        windows.targetForSender(event.sender),
+      );
     },
   );
   ipcMain.handle(desktopIpc.getChangedFiles, async (event, rawWorkspaceId: unknown) => {
@@ -1128,7 +1125,7 @@ function registerWorkspaceFileIpc(
         },
       } satisfies ChangedFilesResult;
     }
-    return capabilities.getChangedFiles(workspacePath);
+    return capabilities.getChangedFiles(workspacePath, windows.targetForSender(event.sender));
   });
   ipcMain.handle(
     desktopIpc.getFileDiff,
@@ -1138,7 +1135,11 @@ function registerWorkspaceFileIpc(
         expectNonEmptyString(rawWorkspaceId, "workspaceId"),
       );
       return workspacePath
-        ? capabilities.getFileDiff(workspacePath, expectString(rawFilePath, "filePath"))
+        ? capabilities.getFileDiff(
+            workspacePath,
+            expectString(rawFilePath, "filePath"),
+            windows.targetForSender(event.sender),
+          )
         : "";
     },
   );
@@ -1151,9 +1152,14 @@ function registerWorkspaceFileIpc(
       if (!workspacePath) {
         throw new Error(`Unknown workspace: ${workspaceId}`);
       }
-      await capabilities.stageFile(workspacePath, expectString(rawFilePath, "filePath"), {
-        sourcePath: expectOptionalString(rawStagingSourcePath, "stagingSourcePath"),
-      });
+      await capabilities.stageFile(
+        workspacePath,
+        expectString(rawFilePath, "filePath"),
+        {
+          sourcePath: expectOptionalString(rawStagingSourcePath, "stagingSourcePath"),
+        },
+        windows.targetForSender(event.sender),
+      );
     },
   );
 }

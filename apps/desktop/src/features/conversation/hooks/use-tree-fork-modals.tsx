@@ -35,7 +35,6 @@ interface UseTreeForkModalsParams {
   readonly selectedWorkspace: WorkspaceRecord | undefined;
   readonly selectedSession: SessionRecord | undefined;
   readonly selectedSessionKey: string;
-  readonly rootWorkspace: WorkspaceRecord | undefined;
   readonly activeView: AppView | undefined;
   readonly setComposerDraft: Dispatch<SetStateAction<string>>;
   readonly focusComposer: () => void;
@@ -49,7 +48,6 @@ export function useTreeForkModals(params: UseTreeForkModalsParams) {
     selectedWorkspace,
     selectedSession,
     selectedSessionKey,
-    rootWorkspace,
     activeView,
     setComposerDraft,
     focusComposer,
@@ -206,6 +204,7 @@ export function useTreeForkModals(params: UseTreeForkModalsParams) {
         .forkThread(input)
         .then((state) => {
           applySnapshotIfNewer(setSnapshot, state);
+          if (state.lastError) throw new Error(state.lastError);
           setForkModalState({
             open: false,
             submitting: false,
@@ -253,6 +252,5 @@ export function useTreeForkModals(params: UseTreeForkModalsParams) {
     closeForkModal,
     openForkModal,
     handleForkSubmit,
-    canUseWorktree: Boolean(rootWorkspace),
   };
 }

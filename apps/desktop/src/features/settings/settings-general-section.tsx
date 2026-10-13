@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import type { RuntimeSnapshot } from "@pi-gui/session-driver/runtime-types";
 import type { ModelSettingsScopeMode } from "../../../contracts/desktop-state";
 import { SettingsSegmented, SettingsSwitch } from "./settings-controls";
@@ -16,23 +15,9 @@ interface SettingsGeneralSectionProps {
 export function SettingsGeneralSection({
   runtime,
   modelSettingsScopeMode,
-  integratedTerminalShell,
   onSetModelSettingsScopeMode,
-  onSetIntegratedTerminalShell,
   onToggleSkillCommands,
 }: SettingsGeneralSectionProps) {
-  const [terminalShellDraft, setTerminalShellDraft] = useState(integratedTerminalShell);
-
-  useEffect(() => {
-    setTerminalShellDraft(integratedTerminalShell);
-  }, [integratedTerminalShell]);
-
-  const commitTerminalShellDraft = () => {
-    if (terminalShellDraft !== integratedTerminalShell) {
-      onSetIntegratedTerminalShell(terminalShellDraft);
-    }
-  };
-
   return (
     <>
       <SettingsGroup title="Agent">
@@ -65,24 +50,8 @@ export function SettingsGeneralSection({
       <SettingsGroup title="Terminal">
         <SettingsRow
           title="Shell"
-          description="The shell the integrated terminal starts. Leave blank to use your login shell."
-        >
-          <input
-            aria-label="Shell of integrated terminal"
-            className="settings-text-input"
-            placeholder="/bin/zsh"
-            spellCheck={false}
-            type="text"
-            value={terminalShellDraft}
-            onBlur={commitTerminalShellDraft}
-            onChange={(event) => setTerminalShellDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
-            }}
-          />
-        </SettingsRow>
+          description="The integrated terminal runs bash in the selected thread’s Vercel Sandbox."
+        />
       </SettingsGroup>
     </>
   );

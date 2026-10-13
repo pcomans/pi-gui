@@ -47,7 +47,7 @@ export function Topbar({
           className="topbar__workspace"
           title={checkoutLabel ? `${rootWorkspace?.name ?? ""} · ${checkoutLabel}` : undefined}
         >
-          {rootWorkspace ? rootWorkspace.name : "Open a folder to begin"}
+          {rootWorkspace ? rootWorkspace.name : "Open a repository to begin"}
         </span>
         {sessionTitle ? (
           <>

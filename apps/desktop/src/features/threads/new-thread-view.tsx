@@ -146,11 +146,8 @@ export function NewThreadView({
       <section className="canvas canvas--empty">
         <div className="empty-panel">
           <div className="session-header__eyebrow">New thread</div>
-          <h1>Open a folder to begin</h1>
-          <p>
-            Select a repository from the sidebar first, then start a local or worktree-backed
-            thread.
-          </p>
+          <h1>Open a repository to begin</h1>
+          <p>Open a repository URL from the sidebar, then start a sandbox thread.</p>
         </div>
       </section>
     );
@@ -292,22 +289,7 @@ function NewThreadComposerFooter({
       <div className="composer__footer">
         <div className="composer__footer-row">
           <div className="composer__hint new-thread__hint">
-            <div className="new-thread__environment-group">
-              <button
-                className={`new-thread__environment ${environment === "local" ? "new-thread__environment--active" : ""}`}
-                type="button"
-                onClick={() => onSelectEnvironment("local")}
-              >
-                <span>Local</span>
-              </button>
-              <button
-                className={`new-thread__environment ${environment === "worktree" ? "new-thread__environment--active" : ""}`}
-                type="button"
-                onClick={() => onSelectEnvironment("worktree")}
-              >
-                <span>Worktree</span>
-              </button>
-            </div>
+            <span>Vercel Sandbox</span>
             <span className="new-thread__hint-separator">·</span>
             <ModelSelector
               runtime={runtime}

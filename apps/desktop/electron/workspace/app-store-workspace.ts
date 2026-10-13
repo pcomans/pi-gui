@@ -49,6 +49,15 @@ type WorkspaceDriver = Pick<
 >;
 
 export interface WorkspaceOwnerHost {
+  prepareRemoteFork?(workspace: WorkspaceRef, source: SessionRef): Promise<void>;
+  forkRemoteWorkspace?(
+    workspace: WorkspaceRef,
+    source: SessionRef,
+    target: SessionRef,
+  ): Promise<void>;
+  prepareWorkspace?(
+    input: string,
+  ): Promise<{ path: string; displayName: string; repositoryUrl: string }>;
   readonly driver: WorkspaceDriver;
   readonly catalogStore: JsonCatalogStore;
   readonly worktreeManager: GitWorktreeManager;
@@ -134,12 +143,22 @@ export function createWorkspaceOwner(store: WorkspaceOwnerHost): WorkspaceOwner 
     unarchiveSession: (target) => unarchiveSession(store, target),
     createSession: (input) => createSession(store, input),
     syncCurrentWorkspace: () => syncCurrentWorkspace(store),
-    createWorktree: (input) => worktree.createWorktree(store, input),
-    removeWorktree: (input) => worktree.removeWorktree(store, input),
+    createWorktree: (input) =>
+      store.prepareWorkspace
+        ? store.withError("Each cloud thread has its own sandbox. Create a thread instead.")
+        : worktree.createWorktree(store, input),
+    removeWorktree: (input) =>
+      store.prepareWorkspace
+        ? store.withError("Local worktrees are unavailable in cloud workspaces.")
+        : worktree.removeWorktree(store, input),
     startThread: (input) => worktree.startThread(store, input),
     forkThread: (input) => worktree.forkThread(store, input),
-    reconcileWorktrees: () => worktree.reconcileWorktrees(store),
-    syncAndListWorktrees: (workspaces) => worktree.syncAndListWorktrees(store, workspaces),
+    reconcileWorktrees: () =>
+      store.prepareWorkspace ? Promise.resolve() : worktree.reconcileWorktrees(store),
+    syncAndListWorktrees: (workspaces) =>
+      store.prepareWorkspace
+        ? Promise.resolve([])
+        : worktree.syncAndListWorktrees(store, workspaces),
   };
 }
 
@@ -177,7 +196,13 @@ async function addWorkspace(store: WorkspaceOwnerHost, path: string): Promise<De
   }
 
   return store.withErrorHandling(async () => {
-    const synced = await store.driver.syncWorkspace(normalizedPath);
+    const prepared = await store.prepareWorkspace?.(normalizedPath);
+    const registered = prepared && state.workspaces.find((entry) => entry.path === prepared.path);
+    const synced = await store.driver.syncWorkspace(
+      prepared?.path ?? normalizedPath,
+      registered?.name ?? prepared?.displayName,
+      prepared?.repositoryUrl,
+    );
     const firstSession = synced.sessions[0];
     if (firstSession) {
       await store.ensureSessionReady(firstSession.sessionRef);

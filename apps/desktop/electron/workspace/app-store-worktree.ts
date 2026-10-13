@@ -104,6 +104,15 @@ export async function startThread(
     return store.withError(`Unknown workspace: ${input.rootWorkspaceId}`);
   }
 
+  if (
+    store.prepareWorkspace &&
+    (!rootWorkspace.repositoryUrl || input.environment === "worktree")
+  ) {
+    return store.withError(
+      "Open a repository URL to start a sandbox thread. Local worktrees are unavailable.",
+    );
+  }
+
   return store.withErrorHandling(async () => {
     // Checked against the folder the user chose the flags in; a new worktree has the
     // same committed extensions.
@@ -228,6 +237,11 @@ export async function forkThread(
   if (!sourceWorkspace) {
     return store.withError(`Unknown workspace: ${input.sourceWorkspaceId}`);
   }
+  if (
+    store.prepareWorkspace &&
+    (!sourceWorkspace.repositoryUrl || input.environment === "worktree")
+  )
+    return store.withError("Open a repository URL to fork a sandbox thread.");
 
   return store.withErrorHandling(async () => {
     const sourceRef = { workspaceId: input.sourceWorkspaceId, sessionId: input.sourceSessionId };
@@ -243,6 +257,7 @@ export async function forkThread(
       targetWorkspace: sourceWorkspace,
       ...forkOptions,
     });
+    await store.prepareRemoteFork?.(sourceWorkspace, sourceRef);
 
     let targetWorkspace = sourceWorkspace;
     let rollbackWorktree: (() => Promise<void>) | undefined;
@@ -285,6 +300,7 @@ export async function forkThread(
       throw error;
     }
     store.updateSessionConfig(session.ref, session.config);
+    await store.forkRemoteWorkspace?.(targetWorkspace, sourceRef, session.ref);
     store.recordExtensionFlags(session.ref, extensionFlagValues);
 
     // Set selection eagerly so subscription replay events read the new session ID.

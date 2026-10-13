@@ -28,7 +28,7 @@ export type {
 export type AppView = "threads" | "new-thread" | "scheduled" | "skills" | "extensions" | "settings";
 export type WorkspaceKind = "primary" | "worktree";
 export type WorktreeStatus = "ready" | "missing" | "error";
-export type NewThreadEnvironment = "local" | "worktree";
+export type NewThreadEnvironment = "local" | "worktree" | "sandbox";
 export type ThemeMode = "system" | "light" | "dark";
 export const themePresetIds = [
   "default",
@@ -276,6 +276,7 @@ export interface ExtensionCommandCompatibilityRecord {
 }
 
 export interface WorkspaceRecord {
+  readonly repositoryUrl?: string;
   readonly id: string;
   readonly name: string;
   readonly path: string;

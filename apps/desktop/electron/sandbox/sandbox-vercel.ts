@@ -1,17 +1,18 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import type { WorkspaceRef } from "@pi-gui/session-driver";
+import type { RemoteWorkbenchCalls } from "./remote-workbench";
 import { homedir } from "node:os";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { APIError, Sandbox } from "@vercel/sandbox";
 import type { SandboxSessionState } from "../../contracts/sandbox";
 import type { SandboxConnection, SandboxSessionRef, ToolSandboxSession } from "./sandbox-session";
-import { gitIdentityEnv, repositoryIdentity } from "./sandbox-sbx";
-import { readProjectSandboxConfig, sandboxSetupScript } from "./sandbox-setup";
-import { localInventory, SandboxCheckoutSync } from "./sandbox-sync";
 import { SandboxWorker, WORKER_SOURCE } from "./sandbox-worker";
 
-export const VERCEL_SANDBOX_PROMPT = `Tool sandbox: read, write, edit, bash and ! commands run in this thread's persistent Vercel Sandbox (Ubuntu Linux). Pi, model connections, MCP and extension tools stay on the user's computer. The checkout is copied to the same absolute path; source changes synchronize before tool results return. Ignored files (including node_modules), host credentials and host services are unavailable. Install Linux dependencies in the sandbox. This POC has an independent Git repository initialized from the starting checkout: commits, branches and staging do not synchronize; the user commits locally. Skills outside the checkout are unavailable. Use rg, find and ls through bash. Stop kills command process groups. On an interrupted connection, report the uncertain outcome and never automatically repeat the command.`;
+declare const __PI_GUI_REMOTE_WORKBENCH__: string;
+export const REMOTE_CWD = "/vercel/sandbox";
+export const VERCEL_SANDBOX_PROMPT = `Workspace: this thread owns a persistent Vercel Sandbox running Ubuntu Linux. The repository, Git history, dependencies, read/write/edit/bash tools and ! commands live exclusively in the sandbox at /vercel/sandbox. There is no local checkout and no file synchronization. The app's Files, Review and terminal use this same repository. Pi, conversation history, model connections, MCP and extension tools stay on the user's computer; their host paths are not repository paths. Host credentials and services are unavailable. Use rg, find and ls through bash. Git commits and branches stay in the sandbox; push or export deliberately. Stop kills command process groups. On an interrupted connection, report the uncertain outcome and never automatically repeat a command.`;
 
 export async function vercelSandboxCredentials(): Promise<{
   token: string;
@@ -46,12 +47,17 @@ export async function vercelSandboxCredentials(): Promise<{
   return { token, teamId, projectId };
 }
 
-async function remoteWorker(sandbox: Sandbox, cwd: string): Promise<SandboxWorker> {
+async function remoteWorker(sandbox: Sandbox, ref: SandboxSessionRef): Promise<SandboxWorker> {
+  const bundlePath = "/tmp/pi-gui-workbench.cjs";
+  await sandbox.writeFiles([
+    { path: bundlePath, content: Buffer.from(__PI_GUI_REMOTE_WORKBENCH__) },
+  ]);
   const stdout = new PassThrough();
   const command = await sandbox.runCommand({
     cmd: "node",
-    args: ["-e", WORKER_SOURCE],
-    cwd,
+    args: ["-r", bundlePath, "-e", WORKER_SOURCE],
+    cwd: REMOTE_CWD,
+    env: { PI_GUI_WORKSPACE_ID: ref.workspaceId, PI_GUI_SESSION_ID: ref.sessionId },
     stdin: true,
     detached: true,
     stdout,
@@ -59,6 +65,12 @@ async function remoteWorker(sandbox: Sandbox, cwd: string): Promise<SandboxWorke
   const stdin = new Writable({
     write(chunk: Buffer, _encoding, callback) {
       command.writeStdin(chunk).then(
+        () => callback(),
+        (error: unknown) => callback(new Error(String(error))),
+      );
+    },
+    writev(chunks: { chunk: Buffer }[], callback) {
+      command.writeStdin(Buffer.concat(chunks.map(({ chunk }) => chunk))).then(
         () => callback(),
         (error: unknown) => callback(new Error(String(error))),
       );
@@ -96,166 +108,239 @@ async function remoteWorker(sandbox: Sandbox, cwd: string): Promise<SandboxWorke
   });
 }
 
-function quote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 export class VercelSandboxSession implements ToolSandboxSession {
+  readonly checkoutPath = REMOTE_CWD;
   state: SandboxSessionState = "idle";
   message: string | undefined;
   sandbox: string | undefined;
   private remote: Sandbox | undefined;
   private connection: SandboxConnection | undefined;
-  private queue: Promise<unknown> = Promise.resolve();
+  private starting: Promise<SandboxConnection> | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
   private activeCalls = 0;
+  private terminalCount = 0;
+  private stopping: Promise<void> | undefined;
 
   constructor(
     readonly ref: SandboxSessionRef,
-    readonly checkoutPath: string,
+    readonly workspace: WorkspaceRef,
     private readonly userDataDir: string,
-    private readonly assertNetworkRules: (repoPath: string) => void,
     private readonly onStatus: (state: SandboxSessionState, message?: string) => void,
   ) {}
 
-  // The POC deliberately does not upload the user's global skill directories.
-  setReadonlyMounts(_paths: readonly string[]): void {}
-
-  use<T>(work: (connection: SandboxConnection) => Promise<T>): Promise<T> {
+  async use<T>(work: (connection: SandboxConnection) => Promise<T>): Promise<T> {
+    if (this.closed) throw new Error("This thread's sandbox was closed.");
     clearTimeout(this.idleTimer);
     this.activeCalls += 1;
-    const operation = this.queue.then(async () => {
-      if (this.closed) throw new Error("This thread's sandbox was closed.");
-      const credentials = await vercelSandboxCredentials();
-      const identity = await repositoryIdentity(this.checkoutPath);
-      this.assertNetworkRules(identity.repoPath);
-      const hash = createHash("sha256")
-        .update(
-          [
-            this.userDataDir,
-            this.checkoutPath,
-            credentials.projectId,
-            this.ref.workspaceId,
-            this.ref.sessionId,
-          ].join("\0"),
-        )
-        .digest("hex")
-        .slice(0, 24);
-      this.sandbox = `pi-gui-poc-${hash}`;
-      const sync = new SandboxCheckoutSync(
-        this.checkoutPath,
-        path.join(this.userDataDir, "sandbox", "vercel", hash),
-      );
-      const restored = await sync.load();
-      // Recycle between calls; never move or replay a running tool command.
-      if (this.remote?.expiresAt && this.remote.expiresAt.getTime() - Date.now() < 120_000)
+    try {
+      if (this.stopping) await this.stopping;
+      if (
+        this.remote?.expiresAt &&
+        this.remote.expiresAt.getTime() - Date.now() < 120_000 &&
+        this.activeCalls === 1 &&
+        !this.terminalCount
+      )
         await this.disconnect();
       if (!this.connection || this.connection.worker.isClosed) {
-        this.setStatus("starting", "Starting Vercel Sandbox…");
-        // Validate upload coverage before provisioning anything remotely.
-        await localInventory(this.checkoutPath);
-        const config = await readProjectSandboxConfig(this.checkoutPath);
-        try {
-          this.remote = await Sandbox.get({ ...credentials, name: this.sandbox, resume: true });
-        } catch (error) {
-          if (!(error instanceof APIError) || error.response.status !== 404) throw error;
-          if (restored)
-            throw new Error(
-              "The persistent sandbox is missing. Local baseline was retained; recover the remote workspace before continuing.",
-            );
-          this.remote = await Sandbox.create({
-            ...credentials,
-            name: this.sandbox,
-            image: "vercel/sandbox/universal",
-            persistent: true,
-            timeout: 30 * 60_000,
-            snapshotExpiration: 0,
-            networkPolicy: "allow-all",
-          });
-        }
-        const remote = this.remote;
-        if (!restored) {
-          const identity = await remote.runCommand({
-            cmd: "node",
-            args: ["-e", "console.log(process.getuid() + ':' + process.getgid())"],
-          });
-          const owner = (await identity.stdout()).trim();
-          if (identity.exitCode !== 0 || !/^\d+:\d+$/.test(owner))
-            throw new Error("Could not identify the sandbox's default user.");
-          const prepare = await remote.runCommand({
-            cmd: "bash",
-            args: [
-              "-c",
-              `mkdir -p ${quote(this.checkoutPath)} && chown ${owner} ${quote(this.checkoutPath)}`,
-            ],
-            sudo: true,
-          });
-          if (prepare.exitCode !== 0) throw new Error(await prepare.stderr());
-          const init = await remote.runCommand({
-            cmd: "git",
-            args: ["init", "-q", this.checkoutPath],
-          });
-          if (init.exitCode !== 0) throw new Error(await init.stderr());
-        }
-        const worker = await remoteWorker(this.remote, this.checkoutPath);
-        this.connection = { worker, env: await gitIdentityEnv(this.checkoutPath) };
-        if (!restored) {
-          await sync.seed(worker);
-          const result = await worker.exec(
-            [
-              "bash",
-              "-c",
-              "git add -A && git -c user.name=pi-gui -c user.email=pi-gui@localhost commit -qm 'POC starting checkout' --allow-empty",
-            ],
-            { cwd: this.checkoutPath },
-          );
-          if (result.exitCode !== 0)
-            throw new Error("Could not initialize the remote checkout baseline.");
-        }
-        const setup = await this.remote.runCommand({
-          cmd: "bash",
-          // The managed image already provides pnpm, which honors the repo's packageManager.
-          args: ["-c", sandboxSetupScript(config, false)],
-          cwd: this.checkoutPath,
-          sudo: true,
+        this.starting ??= this.start().finally(() => {
+          this.starting = undefined;
         });
-        if (setup.exitCode !== 0)
-          throw new Error(`Vercel Sandbox setup failed: ${(await setup.stderr()).slice(-2000)}`);
+        this.connection = await this.starting;
       }
-      await sync.reconcile(this.connection.worker);
-      this.setStatus("ready", undefined);
-      try {
-        return await work(this.connection);
-      } finally {
-        // Includes bash writes and partial changes from a stopped command. Awaited before Pi settles.
-        if (!this.connection.worker.isClosed) await sync.reconcile(this.connection.worker);
+      return await work(this.connection);
+    } catch (error) {
+      if (!this.connection || this.connection.worker.isClosed)
+        this.setStatus("failed", String(error));
+      throw error;
+    } finally {
+      this.activeCalls -= 1;
+      this.scheduleIdleStop();
+    }
+  }
+
+  retainTerminal(closed: Promise<unknown>): void {
+    this.terminalCount += 1;
+    clearTimeout(this.idleTimer);
+    const release = () => {
+      this.terminalCount -= 1;
+      this.scheduleIdleStop();
+    };
+    void closed.then(release, release);
+  }
+
+  async call<K extends keyof RemoteWorkbenchCalls>(
+    action: K,
+    input: RemoteWorkbenchCalls[K]["input"],
+    signal?: AbortSignal,
+  ): Promise<RemoteWorkbenchCalls[K]["output"]> {
+    // The peer is our bundled workbench. Inputs are validated at IPC and again at the guest owner.
+    return (await this.use(({ worker }) =>
+      worker.service(action, input, signal),
+    )) as RemoteWorkbenchCalls[K]["output"];
+  }
+
+  private async identity() {
+    const credentials = await vercelSandboxCredentials();
+    const hash = createHash("sha256")
+      .update(
+        [this.userDataDir, credentials.projectId, this.ref.workspaceId, this.ref.sessionId].join(
+          "\0",
+        ),
+      )
+      .digest("hex")
+      .slice(0, 24);
+    const name = `pi-gui-remote-${hash}`;
+    const stateDir = path.join(this.userDataDir, "sandbox", "vercel", hash);
+    return { credentials, name, stateDir, marker: path.join(stateDir, "created.json") };
+  }
+
+  async forkFrom(source: VercelSandboxSession): Promise<void> {
+    try {
+      if (source.activeCalls)
+        throw new Error("Wait for the source thread’s current operation before forking its files.");
+      await source.use(async () => undefined);
+      const previousSnapshot = source.remote?.currentSnapshotId;
+      const sourceName = source.sandbox!;
+      await source.stop();
+      const identity = await this.identity();
+      this.setStatus("starting", "Copying the source thread’s remote workspace…");
+      await mkdir(identity.stateDir, { recursive: true });
+      await writeFile(
+        identity.marker,
+        JSON.stringify({
+          name: identity.name,
+          repositoryUrl: this.workspace.repositoryUrl,
+          sourceSandbox: sourceName,
+        }),
+      );
+      const deadline = Date.now() + 60_000;
+      while (true) {
+        const saved = await Sandbox.get({ ...identity.credentials, name: sourceName });
+        if (
+          saved.status === "stopped" &&
+          saved.currentSnapshotId &&
+          saved.currentSnapshotId !== previousSnapshot
+        )
+          break;
+        if (Date.now() >= deadline)
+          throw new Error(
+            "The source workspace snapshot is still pending. The source was retained; try forking again after it finishes.",
+          );
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-    });
-    this.queue = operation.catch((error: unknown) => {
+      this.remote = await Sandbox.fork({
+        ...identity.credentials,
+        name: identity.name,
+        sourceSandbox: sourceName,
+        persistent: true,
+        timeout: 30 * 60_000,
+        snapshotExpiration: 0,
+      });
+      this.sandbox = identity.name;
+      this.setStatus("idle", undefined);
+    } catch (error) {
       this.setStatus("failed", String(error));
-    });
-    this.queue
-      .then(() => {
-        this.activeCalls -= 1;
-        if (this.activeCalls > 0 || this.closed) return;
-        clearTimeout(this.idleTimer);
-        this.idleTimer = setTimeout(() => {
-          this.stop().catch((error: unknown) => console.error("[vercel sandbox] idle stop", error));
-        }, 10 * 60_000);
-        this.idleTimer.unref?.();
-      })
-      .catch(() => undefined);
-    return operation;
+      throw error;
+    }
+  }
+
+  private async start(): Promise<SandboxConnection> {
+    if (!this.workspace.repositoryUrl)
+      throw new Error(
+        "This is a saved local workspace. Its history is retained; open a repository URL to run tools remotely.",
+      );
+    const { credentials, name, stateDir, marker } = await this.identity();
+    this.sandbox = name;
+    const wasCreated = await readFile(marker, "utf8").then(
+      () => true,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      },
+    );
+    this.setStatus("starting", "Starting remote workspace…");
+    let worker: SandboxWorker | undefined;
+    try {
+      try {
+        this.remote = await Sandbox.get({ ...credentials, name: this.sandbox, resume: true });
+      } catch (error) {
+        if (!(error instanceof APIError) || error.response.status !== 404) throw error;
+        if (wasCreated)
+          throw new Error(
+            "The persistent sandbox is missing. Its metadata was retained; restore the remote workspace before continuing.",
+          );
+        this.remote = await Sandbox.create({
+          ...credentials,
+          name: this.sandbox,
+          image: "vercel/sandbox/universal",
+          source: { type: "git", url: this.workspace.repositoryUrl },
+          persistent: true,
+          timeout: 30 * 60_000,
+          snapshotExpiration: 0,
+          networkPolicy: "allow-all",
+        });
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(
+          marker,
+          JSON.stringify({ name: this.sandbox, repositoryUrl: this.workspace.repositoryUrl }),
+        );
+      }
+      // Managed images choose their own initial cwd and clone into a repo-named child.
+      // Move that remote checkout once into our stable tool cwd; no host files are involved.
+      const prepare = await this.remote.runCommand({
+        cmd: "node",
+        args: ["-e", PREPARE_CHECKOUT, REMOTE_CWD],
+      });
+      if (prepare.exitCode !== 0)
+        throw new Error(`Remote checkout could not open: ${(await prepare.stderr()).slice(-2000)}`);
+      worker = await remoteWorker(this.remote, this.ref);
+      const setupScript = await worker.service("setup", null);
+      if (typeof setupScript !== "string") throw new Error("Invalid sandbox setup response.");
+      const setup = await this.remote.runCommand({
+        cmd: "bash",
+        args: ["-c", setupScript],
+        cwd: REMOTE_CWD,
+        sudo: true,
+      });
+      if (setup.exitCode !== 0) {
+        worker.close();
+        throw new Error(`Remote workspace setup failed: ${(await setup.stderr()).slice(-2000)}`);
+      }
+      if (this.closed) {
+        worker.close();
+        throw new Error("This thread's sandbox was closed.");
+      }
+      this.setStatus("ready", undefined);
+      return {
+        worker,
+        env: {
+          GIT_AUTHOR_NAME: "pi-gui",
+          GIT_AUTHOR_EMAIL: "pi-gui@localhost",
+          GIT_COMMITTER_NAME: "pi-gui",
+          GIT_COMMITTER_EMAIL: "pi-gui@localhost",
+        },
+      };
+    } catch (error) {
+      worker?.close();
+      this.setStatus("failed", String(error));
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.stopping = this.stopNow().finally(() => {
+      this.stopping = undefined;
+    });
+    return this.stopping;
+  }
+
+  private async stopNow(): Promise<void> {
     clearTimeout(this.idleTimer);
-    // Closing the worker kills active process groups before the queue drains.
     this.connection?.worker.close();
-    // Setup can run outside the worker. Stop the VM to unblock it before draining.
     if (this.state === "starting" && this.remote) await this.remote.stop();
-    await this.queue;
+    if (this.starting) await this.starting.catch(() => undefined);
     await this.disconnect();
     this.setStatus("idle", undefined);
   }
@@ -274,9 +359,37 @@ export class VercelSandboxSession implements ToolSandboxSession {
     this.remote = undefined;
   }
 
+  private scheduleIdleStop(): void {
+    if (this.activeCalls || this.terminalCount || this.closed) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.stop().catch((error: unknown) => console.error("[remote workspace] idle stop", error));
+    }, 10 * 60_000);
+    this.idleTimer.unref?.();
+  }
+
   private setStatus(state: SandboxSessionState, message: string | undefined): void {
     this.state = state;
     this.message = message;
     this.onStatus(state, message);
   }
 }
+
+const PREPARE_CHECKOUT = String.raw`
+const fs = require("node:fs/promises");
+const path = require("node:path");
+(async () => {
+  const destination = process.argv[1];
+  if (await fs.access(path.join(destination, ".git")).then(() => true, () => false)) return;
+  const root = process.cwd();
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const directory = path.join(root, entry.name);
+    if (await fs.access(path.join(directory, ".git")).then(() => true, () => false)) candidates.push(directory);
+  }
+  if (candidates.length !== 1) throw new Error("Expected one cloned repository; existing files were retained.");
+  await fs.rename(candidates[0], destination);
+})().catch(error => { console.error(error.message); process.exitCode = 1; });
+`;

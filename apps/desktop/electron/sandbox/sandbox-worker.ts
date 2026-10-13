@@ -1,12 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import { TERMINAL_BRIDGE } from "./terminal-bridge";
 
 /**
- * Runs inside the sandbox (`node -e`), started once per thread with `sbx exec -i`. It answers
- * JSON lines on stdin, so file operations and commands do not pay for a new `sbx exec` each.
+ * Runs inside the sandbox (`node -e`) over SDK stdin/stdout. It answers JSON lines so file
+ * operations, workbench requests and commands share one connection.
  * Commands get their own process group, so a cancel kills everything they started.
  */
 export const WORKER_SOURCE = String.raw`
@@ -15,6 +14,8 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
 const readline = require("node:readline");
 const running = new Map();
+const terminals = new Set();
+const services = new Map();
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const failure = (id, error) => send({ id, error: { code: error.code || "", message: String(error.message || error) } });
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {
@@ -22,18 +23,29 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   try { request = JSON.parse(line); } catch { return; }
   const { id, op } = request;
   try {
-    if (op === "exec") {
-      const child = spawn(request.argv[0], request.argv.slice(1), {
-        cwd: request.cwd, env: { ...process.env, ...request.env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
+    if (op === "exec" || op === "pty") {
+      const argv = op === "pty" ? ["python3", "-u", "-c", ${JSON.stringify(TERMINAL_BRIDGE)}, String(request.cols), String(request.rows)] : request.argv;
+      const child = spawn(argv[0], argv.slice(1), {
+        cwd: request.cwd, env: { ...process.env, ...request.env }, detached: true, stdio: [op === "pty" ? "pipe" : "ignore", "pipe", "pipe"],
       });
+      if (op === "pty") terminals.add(id);
       running.set(id, child);
       child.stdout.on("data", (data) => send({ id, out: data.toString("base64") }));
       child.stderr.on("data", (data) => send({ id, err: data.toString("base64") }));
       child.on("error", (error) => { running.delete(id); failure(id, error); });
-      child.on("close", (code, signal) => { running.delete(id); send({ id, done: true, code, signal }); });
-    } else if (op === "kill") {
+      child.on("close", (code, signal) => { running.delete(id); terminals.delete(id); send({ id, done: true, code, signal }); });
+    } else if (op === "pty-input") {
       const child = running.get(request.target);
-      if (child) { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
+      if (!child || !terminals.has(request.target)) throw new Error("Terminal connection ended.");
+      child.stdin.write(JSON.stringify(request.control) + "\n");
+      send({ id, done: true });
+    } else if (op === "kill") {
+      services.get(request.target)?.abort();
+      const child = running.get(request.target);
+      if (child) {
+        if (terminals.has(request.target)) child.kill("SIGTERM");
+        else { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
+      }
       send({ id, done: true });
     } else if (op === "read") {
       if (request.maxBytes === undefined) {
@@ -57,18 +69,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     } else if (op === "access") {
       await fs.access(request.path, request.mode);
       send({ id, done: true });
-    } else if (op === "upload") {
-      const path = require("node:path");
-      for (const file of request.files) {
-        await fs.mkdir(path.dirname(file.path), { recursive: true });
-        await fs.unlink(file.path).catch((error) => { if (error.code !== "ENOENT") throw error; });
-        if (file.link !== undefined) await fs.symlink(file.link, file.path);
-        else {
-          await fs.writeFile(file.path, Buffer.from(file.data, "base64"));
-          await fs.chmod(file.path, file.mode);
-        }
-      }
-      send({ id, done: true });
+    } else if (op === "service") {
+      const controller = new AbortController();
+      services.set(id, controller);
+      try { send({ id, done: true, value: await globalThis.piGuiWorkbench(request.action, request.input, controller.signal) }); }
+      finally { services.delete(id); }
     } else {
       failure(id, new Error("unknown op " + op));
     }
@@ -77,7 +82,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   }
 });
 const shutdown = () => {
-  for (const child of running.values()) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+  for (const [id, child] of running) {
+    if (terminals.has(id)) child.kill("SIGTERM");
+    else { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+  }
   process.exit(0);
 };
 process.stdin.on("end", shutdown);
@@ -86,6 +94,7 @@ send({ ready: true });
 `;
 
 interface WorkerReply {
+  readonly value?: unknown;
   readonly id?: string;
   readonly ready?: boolean;
   readonly out?: string;
@@ -102,7 +111,7 @@ interface Pending {
   readonly onClosed: (error: Error) => void;
 }
 
-/** The same worker protocol runs over either sbx stdio or Vercel's command streams. */
+/** Worker protocol over Vercel command streams. */
 export interface WorkerTransport {
   readonly stdin: Writable;
   readonly stdout: Readable;
@@ -159,57 +168,12 @@ export class SandboxWorker {
     });
   }
 
-  /** Start a worker in `sandbox`; resolves once it reports ready. */
-  static async start(
-    sbx: string,
-    sandbox: string,
-    cwd: string,
-    timeoutMs = 60_000,
-  ): Promise<SandboxWorker> {
-    const child = spawn(
-      sbx,
-      ["exec", "-i", "--workdir", cwd, sandbox, "node", "-e", WORKER_SOURCE],
-      {
-        // The worker must not hold the project directory open on the host.
-        cwd: tmpdir(),
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    const closed = new Promise<Error>((resolve) => {
-      child.on("error", resolve);
-      child.on("close", (code, signal) =>
-        resolve(new Error(`The sandbox connection ended (${signal ?? `exit ${code}`}).`)),
-      );
-    });
-    return SandboxWorker.connect(
-      {
-        stdin: child.stdin,
-        stdout: child.stdout,
-        closed,
-        close: () => {
-          child.stdin.end();
-          child.kill();
-        },
-      },
-      timeoutMs,
-      child,
-    );
-  }
-
-  static async connect(
-    transport: WorkerTransport,
-    timeoutMs = 60_000,
-    child?: ChildProcessWithoutNullStreams,
-  ): Promise<SandboxWorker> {
+  static async connect(transport: WorkerTransport, timeoutMs = 60_000): Promise<SandboxWorker> {
     const worker = new SandboxWorker(transport);
-    let stderr = "";
-    child?.stderr.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-2_000);
-    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
       worker.ready.then(() => undefined),
-      worker.closed.then((error) => new Error(`${error.message} ${stderr.trim()}`.trim())),
+      worker.closed,
       new Promise<Error>((resolve) => {
         timer = setTimeout(
           () => resolve(new Error("The sandbox did not start in time.")),
@@ -281,24 +245,64 @@ export class SandboxWorker {
     await this.request({ op: "write", path, data: Buffer.from(content).toString("base64") });
   }
 
-  async writeFiles(
-    files: readonly { path: string; content: Buffer; mode: number; link?: string }[],
-  ): Promise<void> {
-    await this.request({
-      op: "upload",
-      files: files.map(({ content, ...file }) => ({ ...file, data: content.toString("base64") })),
-    });
-  }
-
   async mkdir(path: string): Promise<void> {
     await this.request({ op: "mkdir", path });
+  }
+
+  async service(action: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
+    return (await this.request({ op: "service", action, input }, signal)).value;
+  }
+
+  openTerminal(options: WorkerExecOptions & { cols: number; rows: number }) {
+    const id = randomUUID();
+    const closed = new Promise<number | null>((resolve, reject) => {
+      this.pending.set(id, {
+        onClosed: reject,
+        onReply: (reply) => {
+          if (reply.out) options.onData?.(Buffer.from(reply.out, "base64"));
+          if (reply.err) options.onData?.(Buffer.from(reply.err, "base64"));
+          if (reply.error) {
+            this.pending.delete(id);
+            reject(new Error(reply.error.message));
+          } else if (reply.done) {
+            this.pending.delete(id);
+            resolve(reply.code ?? null);
+          }
+        },
+      });
+    });
+    this.send({
+      id,
+      op: "pty",
+      cwd: options.cwd,
+      env: options.env,
+      cols: options.cols,
+      rows: options.rows,
+    });
+    return {
+      closed,
+      write: async (data: string) => {
+        await this.request({
+          op: "pty-input",
+          target: id,
+          control: { data: Buffer.from(data).toString("base64") },
+        });
+      },
+      resize: async (cols: number, rows: number) => {
+        await this.request({ op: "pty-input", target: id, control: { cols, rows } });
+      },
+      close: async () => {
+        await this.request({ op: "kill", target: id });
+      },
+    };
   }
 
   async access(path: string, mode?: number): Promise<void> {
     await this.request({ op: "access", path, ...(mode === undefined ? {} : { mode }) });
   }
 
-  private request(message: Record<string, unknown>): Promise<WorkerReply> {
+  private request(message: Record<string, unknown>, signal?: AbortSignal): Promise<WorkerReply> {
+    if (signal?.aborted) return Promise.reject(new Error("aborted"));
     const id = randomUUID();
     const reply = new Promise<WorkerReply>((resolve, reject) => {
       this.pending.set(id, {
@@ -311,7 +315,11 @@ export class SandboxWorker {
       });
     });
     this.send({ id, ...message });
-    return reply;
+    const abort = () => {
+      this.request({ op: "kill", target: id }).catch(() => undefined);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    return reply.finally(() => signal?.removeEventListener("abort", abort));
   }
 
   private send(message: Record<string, unknown>): void {

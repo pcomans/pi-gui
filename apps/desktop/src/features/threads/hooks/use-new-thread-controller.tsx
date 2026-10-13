@@ -63,7 +63,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
 
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState("");
   const [rootWorkspaceId, setRootWorkspaceId] = useState("");
-  const [environment, setEnvironment] = useState<NewThreadEnvironment>("local");
+  const [environment, setEnvironment] = useState<NewThreadEnvironment>("sandbox");
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const [provider, setProvider] = useState<string | undefined>();
@@ -174,7 +174,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       if (nextWorkspaceId) {
         setRootWorkspaceId(nextWorkspaceId);
       }
-      setEnvironment("local");
+      setEnvironment("sandbox");
       setPrompt("");
       setAttachments([]);
       setProvider(undefined);
@@ -326,7 +326,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
         setModelId(undefined);
         setThinkingLevel(undefined);
         setExtensionFlagEdits({});
-        setEnvironment("local");
+        setEnvironment("sandbox");
       })
       .catch((error: unknown) => {
         setComposerError(error instanceof Error ? error.message : String(error));
@@ -425,7 +425,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
     if (rootWorkspaceOptions.length === 0) {
       setPendingWorkspaceId("");
       setRootWorkspaceId("");
-      setEnvironment("local");
+      setEnvironment("sandbox");
       setAttachments([]);
       return;
     }

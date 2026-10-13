@@ -1,86 +1,50 @@
-import path from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { WorkspaceRef } from "@pi-gui/session-driver";
-import {
-  SANDBOX_HOST_ONLY_NAMES,
-  type SandboxSessionState,
-  type SandboxSettingsUpdate,
-  type SandboxSnapshot,
-} from "../../contracts/sandbox";
+import type { WorkspaceRef, SessionRef, TurnCaptureBoundary } from "@pi-gui/session-driver";
+import type { SandboxSessionState, SandboxSnapshot } from "../../contracts/sandbox";
 import { createSandboxExtension } from "./sandbox-extension";
-import {
-  addNetworkRule,
-  listSandboxes,
-  policyLog,
-  removeNetworkRule,
-  removeSandbox,
-  sandboxNetworkRules,
-  sandboxPlatformSupported,
-  sbxInstallHint,
-  sbxStatus,
-  stopSandbox,
-  threadPrefix,
-  type SbxStatus,
-} from "./sandbox-sbx";
-import { SandboxSession, type SandboxSessionRef, type ToolSandboxSession } from "./sandbox-session";
-import { SandboxSettingsStore } from "./sandbox-settings-store";
+import type { SandboxSessionRef, ToolSandboxSession } from "./sandbox-session";
 import {
   VercelSandboxSession,
   vercelSandboxCredentials,
   VERCEL_SANDBOX_PROMPT,
+  REMOTE_CWD,
 } from "./sandbox-vercel";
+import type { RemoteWorkbenchCalls } from "./remote-workbench";
+import type { ReviewRequestsOwner } from "../ipc/review-requests";
 
 export interface SandboxOwnerOptions {
   readonly userDataDir: string;
-  /** Used until the person turns the sandbox on or off in Settings. */
-  readonly enabledByDefault: boolean;
 }
 
-/** sbx's own policy log is polled this often while sandboxes are open, for the host list. */
-const LOG_POLL_MS = 5_000;
-const STATUS_CACHE_MS = 30_000;
-
-/**
- * Owns pi-gui's tool sandboxes: preferences, sbx network logs, and the backend behind each
- * open session. Sessions get it through a hidden extension that users cannot
- * switch off; turning the sandbox off happens here, in Settings.
- */
+/** Owns remote execution. A missing connection fails closed; no tool ever runs on the host. */
 export class SandboxOwner {
-  private readonly store: SandboxSettingsStore;
-  private readonly sessions = new Set<ToolSandboxSession>();
-  private readonly vercel = process.env.PI_APP_SANDBOX_BACKEND === "vercel";
-  private readonly knownRepos = new Set<string>();
-  /** Sandbox name → the repository and thread it serves, for attributing sbx's log. */
-  private readonly sandboxThreads = new Map<
-    string,
-    { readonly repoPath: string; readonly ref: SandboxSessionRef }
-  >();
-  /** Last cumulative count sbx reported per sandbox, host and verdict. */
-  private readonly loggedCounts = new Map<string, number>();
-  private readonly baselined = new Set<string>();
+  private readonly sessions = new Map<string, VercelSandboxSession>();
   private readonly listeners = new Set<() => void>();
-  private status: { readonly value: SbxStatus; readonly at: number } | undefined;
-  private logTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly statusListeners = new Map<
+    string,
+    Set<(state: SandboxSessionState, message?: string) => void>
+  >();
 
-  constructor(private readonly options: SandboxOwnerOptions) {
-    this.store = new SandboxSettingsStore(path.join(options.userDataDir, "sandbox"));
-  }
+  constructor(private readonly options: SandboxOwnerOptions) {}
 
-  async initialize(): Promise<void> {
-    await this.store.load();
-    if (this.enabled() && !this.vercel) {
-      // No thread uses a sandbox yet, so running pi-gui sandboxes were left by a crash.
-      this.stopLeftoverSandboxes().catch((error: unknown) =>
-        console.error("[sandbox] stop leftovers", error),
+  session(workspace: WorkspaceRef, ref: SessionRef): VercelSandboxSession {
+    if (workspace.workspaceId !== ref.workspaceId)
+      throw new Error("The workspace does not own this thread.");
+    const key = `${ref.workspaceId}\0${ref.sessionId}`;
+    let session = this.sessions.get(key);
+    if (!session) {
+      session = new VercelSandboxSession(
+        ref,
+        workspace,
+        this.options.userDataDir,
+        (state, message) => {
+          for (const listener of this.statusListeners.get(key) ?? []) listener(state, message);
+          this.changed();
+        },
       );
+      this.sessions.set(key, session);
     }
-  }
-
-  enabled(): boolean {
-    return (
-      (this.vercel || sandboxPlatformSupported()) &&
-      this.store.enabled(this.options.enabledByDefault)
-    );
+    return session;
   }
 
   sessionExtensions(workspace: WorkspaceRef): InlineExtension[] {
@@ -89,337 +53,103 @@ export class SandboxOwner {
         name: "pi-gui-sandbox",
         hidden: true,
         factory: createSandboxExtension(workspace, {
-          ...(this.vercel ? { prompt: VERCEL_SANDBOX_PROMPT } : {}),
-          enabled: () => this.enabled(),
-          openSession: (ref, checkoutPath, onStatus) =>
-            this.openSession(ref, checkoutPath, onStatus),
-          closeSession: (session) => {
-            this.sessions.delete(session);
-            session.close(true).catch((error: unknown) => console.error("[sandbox] close", error));
-            this.changed();
+          prompt: VERCEL_SANDBOX_PROMPT,
+          cwd: REMOTE_CWD,
+          instructions: (session) => (session as VercelSandboxSession).call("instructions", null),
+          openSession: (ref, _path, onStatus) => {
+            const key = `${ref.workspaceId}\0${ref.sessionId}`;
+            const listeners = this.statusListeners.get(key) ?? new Set();
+            listeners.add(onStatus);
+            this.statusListeners.set(key, listeners);
+            return this.session(workspace, ref);
+          },
+          closeSession: (session: ToolSandboxSession) => {
+            this.statusListeners.delete(`${session.ref.workspaceId}\0${session.ref.sessionId}`);
+            session
+              .stop()
+              .catch((error: unknown) => console.error("[remote workspace] stop", error));
           },
         }),
       },
     ];
   }
 
-  async snapshot(): Promise<SandboxSnapshot> {
-    if (this.vercel) {
-      const error = await vercelSandboxCredentials().then(
-        () => undefined,
-        (error: unknown) => String(error),
-      );
-      return {
-        supported: true,
-        enabled: this.enabled(),
-        backend: {
-          provider: "vercel",
-          state: error ? "unavailable" : "ready",
-          ...(error ? { message: error } : {}),
-          installHint: "vercel login",
-        },
-        sandboxes: {
-          total: [...this.sessions].filter((s) => s.sandbox).length,
-          running: [...this.sessions].filter((s) => s.state === "ready").length,
-          unused: 0,
-        },
-        repos: [],
-        sessions: [...this.sessions].map((session) => ({
-          ...session.ref,
-          state: session.state,
-          ...(session.message ? { message: session.message } : {}),
-        })),
-      };
-    }
-    const status = await this.sbxStatus(true);
-    const ready = status.state === "ready" ? status.binary : undefined;
-    const [listed] = ready
-      ? await Promise.all([listSandboxes(ready).catch(() => []), this.pollLog(ready)])
-      : [[]];
-    const owned = this.store.ownedSandboxes();
-    const sandboxes = listed.filter((sandbox) => owned.has(sandbox.name));
+  async capture(boundary: TurnCaptureBoundary, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new Error("Checkpoint capture was interrupted.");
+    await this.session(boundary.workspace, boundary.sessionRef).call("capture", boundary, signal);
+    if (signal.aborted) throw new Error("Checkpoint capture was interrupted.");
+  }
+
+  async fork(workspace: WorkspaceRef, source: SessionRef, target: SessionRef): Promise<void> {
+    await this.session(workspace, target).forkFrom(this.session(workspace, source));
+  }
+
+  workbench(resolve: (target: SessionRef) => WorkspaceRef | undefined): ReviewRequestsOwner {
+    const reviewTargets = new Map<string, SessionRef>();
+    const call = <K extends keyof ReviewRequestsOwner>(
+      action: K,
+      input: RemoteWorkbenchCalls[K]["input"],
+    ) => {
+      const target = "target" in input ? input.target : reviewTargets.get(input.reviewId);
+      if (!target) throw new Error("This comparison expired. Refresh Review.");
+      const workspace = resolve(target);
+      if (!workspace) throw new Error("This task is unavailable.");
+      return this.session(workspace, target).call(action, input);
+    };
     return {
-      supported: sandboxPlatformSupported(),
-      enabled: this.enabled(),
+      getReview: async (input) => {
+        const result = await call("getReview", input);
+        if (result.state === "available") {
+          reviewTargets.set(result.reviewId, input.target);
+          while (reviewTargets.size > 256) reviewTargets.delete(reviewTargets.keys().next().value!);
+        }
+        return result;
+      },
+      getTurnChanges: (input) => call("getTurnChanges", input),
+      getReviewFile: (input) => call("getReviewFile", input),
+      setReviewFileReviewed: (input) => call("setReviewFileReviewed", input),
+      changeReviewFileStage: (input) => call("changeReviewFileStage", input),
+    };
+  }
+
+  async snapshot(): Promise<SandboxSnapshot> {
+    const error = await vercelSandboxCredentials().then(
+      () => undefined,
+      (error: unknown) => String(error),
+    );
+    const sessions = [...this.sessions.values()];
+    return {
+      supported: true,
+      enabled: true,
       backend: {
-        state: status.state,
-        ...("message" in status ? { message: status.message } : {}),
-        installHint: sbxInstallHint(),
+        provider: "vercel",
+        state: error ? "unavailable" : "ready",
+        ...(error ? { message: error } : {}),
+        installHint: "vercel login",
       },
       sandboxes: {
-        total: sandboxes.length,
-        running: sandboxes.filter((sandbox) => sandbox.status === "running").length,
-        unused: sandboxes.filter((sandbox) => !this.inUse(sandbox.name)).length,
+        total: sessions.filter((s) => s.sandbox).length,
+        running: sessions.filter((s) => s.state === "ready").length,
       },
-      repos: this.store.repoRecords([...this.knownRepos]),
-      sessions: [...this.sessions].map((session) => ({
+      sessions: sessions.map((session) => ({
         ...session.ref,
         state: session.state,
         ...(session.message ? { message: session.message } : {}),
       })),
     };
   }
-
-  /** Whether an open thread owns the sandbox, even if it has not used it since launch. */
-  private inUse(name: string): boolean {
-    return [...this.sessions].some((session) =>
-      name.startsWith(threadPrefix(`${session.ref.workspaceId}\0${session.ref.sessionId}`)),
-    );
-  }
-
-  async update(update: SandboxSettingsUpdate): Promise<SandboxSnapshot> {
-    if (this.vercel && update.kind !== "enabled")
-      throw new Error("Network rules and sandbox removal are not available in the Vercel POC.");
-    if (update.kind === "remove-unused-sandboxes") {
-      await this.removeUnusedSandboxes();
-    } else {
-      await this.store.update(update);
-      if (!this.vercel)
-        await this.reapplyNetworkRules(update.kind === "host-rule" ? update.repoPath : undefined);
-    }
-    this.changed();
-    return this.snapshot();
-  }
-
-  /** Check sbx again (Settings' Check again button). */
-  async prepare(): Promise<SandboxSnapshot> {
-    this.status = undefined;
-    return this.snapshot();
-  }
-
-  /** Stop the sandboxes of archived threads; a restored thread starts its own on its next call. */
   stopArchived(isArchived: (ref: SandboxSessionRef) => boolean): void {
-    for (const session of this.sessions) {
-      if (session.state !== "idle" && isArchived(session.ref)) {
-        session.stop().catch((error: unknown) => console.error("[sandbox] stop", error));
-      }
-    }
+    for (const session of this.sessions.values())
+      if (session.state !== "idle" && isArchived(session.ref))
+        session.stop().catch((error: unknown) => console.error("[remote workspace] stop", error));
   }
-
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-
   async closeAll(): Promise<void> {
-    if (this.logTimer) clearInterval(this.logTimer);
-    this.logTimer = undefined;
-    const sessions = [...this.sessions];
-    this.sessions.clear();
-    await Promise.all(sessions.map((session) => session.close(true)));
-    await this.store.flush().catch((error: unknown) => console.error("[sandbox] flush", error));
+    await Promise.all([...this.sessions.values()].map((session) => session.close(true)));
   }
-
-  private openSession(
-    ref: SandboxSessionRef,
-    checkoutPath: string,
-    onStatus: (state: SandboxSessionState, message?: string) => void,
-  ): ToolSandboxSession {
-    if (this.vercel) {
-      const session = new VercelSandboxSession(
-        ref,
-        checkoutPath,
-        this.options.userDataDir,
-        (repoPath) => {
-          if (this.store.rulesFor(repoPath).blockedHosts.length > 0) {
-            throw new Error(
-              "This repository has blocked hosts. The Vercel POC cannot enforce these rules; use sbx for this repository.",
-            );
-          }
-        },
-        (state, message) => {
-          onStatus(state, message);
-          this.changed();
-        },
-      );
-      this.sessions.add(session);
-      this.changed();
-      return session;
-    }
-    const session = new SandboxSession(
-      ref,
-      checkoutPath,
-      {
-        sbx: async () => {
-          const status = await this.sbxStatus(false);
-          if (status.state === "ready") return status.binary;
-          this.status = undefined;
-          throw new Error(
-            status.state === "missing"
-              ? `Docker Sandboxes (sbx) is not installed. Install it: ${sbxInstallHint()}. Or turn the sandbox off in Settings > Sandbox.`
-              : `${status.message} Or turn the sandbox off in Settings > Sandbox.`,
-          );
-        },
-        applyNetworkRules: (sbx, sandbox, repoPath) =>
-          this.applyNetworkRules(sbx, sandbox, repoPath),
-        noteSandbox: (sandbox, repoPath, sessionRef) => {
-          // A thread whose mounts changed moved to a new sandbox; its old one is gone.
-          for (const [name, thread] of this.sandboxThreads) {
-            if (
-              thread.ref.workspaceId === sessionRef.workspaceId &&
-              thread.ref.sessionId === sessionRef.sessionId
-            ) {
-              this.sandboxThreads.delete(name);
-            }
-          }
-          this.sandboxThreads.set(sandbox, { repoPath, ref: sessionRef });
-          this.store
-            .setOwned(sandbox, true)
-            .catch((error: unknown) => console.error("[sandbox] record sandbox", error));
-          this.knownRepos.add(repoPath);
-          this.startLogPolling();
-        },
-        changed: () => this.changed(),
-      },
-      onStatus,
-    );
-    this.sessions.add(session);
-    this.changed();
-    // Say so before the first tool call when sbx cannot run sandboxes at all.
-    this.sbxStatus(false)
-      .then((status) => {
-        if (status.state === "missing") {
-          session.unavailable(
-            `Docker Sandboxes (sbx) is not installed. Install it: ${sbxInstallHint()}.`,
-          );
-        } else if (status.state !== "ready") {
-          session.unavailable(status.message);
-        }
-      })
-      .catch(() => undefined);
-    return session;
-  }
-
-  private async sbxStatus(fresh: boolean): Promise<SbxStatus> {
-    if (!fresh && this.status?.value.state === "ready") return this.status.value;
-    if (this.status && Date.now() - this.status.at < STATUS_CACHE_MS && !fresh) {
-      return this.status.value;
-    }
-    this.status = { value: await sbxStatus(), at: Date.now() };
-    return this.status.value;
-  }
-
-  /**
-   * Make a sandbox's own rules match its repository: allow every host and deny the blocked ones
-   * (sbx lets a deny win over any allow). There is no allowlist mode: sbx's global policy allows
-   * every host by default and outranks per-sandbox allows, so an allowlist could not narrow it.
-   */
-  private async applyNetworkRules(sbx: string, sandbox: string, repoPath: string): Promise<void> {
-    const rules = this.store.rulesFor(repoPath);
-    // Services on this Mac stay out of reach unless the person allowed one by name.
-    const hostOnly = SANDBOX_HOST_ONLY_NAMES.filter((name) => !rules.allowedHosts.includes(name));
-    const wanted = [
-      { decision: "allow" as const, resource: "**" },
-      ...[...new Set([...rules.blockedHosts, ...hostOnly])].map((host) => ({
-        decision: "deny" as const,
-        resource: host,
-      })),
-    ];
-    await this.baselineLog(sbx, sandbox);
-    const current = await sandboxNetworkRules(sbx, sandbox);
-    const key = (decision: string, resource: string) => `${decision} ${resource}`;
-    const wantedKeys = new Set(wanted.map((rule) => key(rule.decision, rule.resource)));
-    const currentKeys = new Set<string>();
-    for (const rule of current) {
-      const ruleKey = key(rule.decision, rule.resources.join(","));
-      if (wantedKeys.has(ruleKey) && !currentKeys.has(ruleKey)) currentKeys.add(ruleKey);
-      else await removeNetworkRule(sbx, sandbox, rule.id);
-    }
-    for (const rule of wanted) {
-      if (!currentKeys.has(key(rule.decision, rule.resource))) {
-        await addNetworkRule(sbx, sandbox, rule.decision, rule.resource);
-      }
-    }
-  }
-
-  private async reapplyNetworkRules(repoPath: string | undefined): Promise<void> {
-    const status = await this.sbxStatus(false);
-    if (status.state !== "ready") return;
-    for (const [sandbox, thread] of this.sandboxThreads) {
-      if (repoPath === undefined || thread.repoPath === repoPath) {
-        await this.applyNetworkRules(status.binary, sandbox, thread.repoPath).catch(
-          (error: unknown) => console.error("[sandbox] network rules", error),
-        );
-      }
-    }
-  }
-
-  private startLogPolling(): void {
-    this.logTimer ??= setInterval(() => {
-      if (this.sessions.size === 0) return;
-      const status = this.status?.value;
-      if (status?.state !== "ready") return;
-      this.pollLog(status.binary).catch((error: unknown) =>
-        console.error("[sandbox] policy log", error),
-      );
-    }, LOG_POLL_MS);
-    this.logTimer.unref?.();
-  }
-
-  /**
-   * sbx keeps a sandbox's counts across restarts and app launches; counting starts from what it
-   * reports when this run first uses the sandbox, so earlier traffic is not counted again.
-   */
-  private async baselineLog(sbx: string, sandbox: string): Promise<void> {
-    if (this.baselined.has(sandbox)) return;
-    this.baselined.add(sandbox);
-    for (const entry of await policyLog(sbx).catch(() => [])) {
-      if (entry.sandbox === sandbox) {
-        this.loggedCounts.set(`${entry.sandbox}\0${entry.host}\0${entry.allowed}`, entry.count);
-      }
-    }
-  }
-
-  /** Fold sbx's cumulative per-sandbox counts into the per-repository host log. */
-  private async pollLog(sbx: string): Promise<void> {
-    let changed = false;
-    for (const entry of await policyLog(sbx).catch(() => [])) {
-      const thread = this.sandboxThreads.get(entry.sandbox);
-      if (!thread) continue;
-      const countKey = `${entry.sandbox}\0${entry.host}\0${entry.allowed}`;
-      const previous = this.loggedCounts.get(countKey) ?? 0;
-      // A restarted sandbox counts from zero again.
-      const added = entry.count >= previous ? entry.count - previous : entry.count;
-      this.loggedCounts.set(countKey, entry.count);
-      if (added > 0) {
-        this.store.record(
-          thread.repoPath,
-          entry.host,
-          entry.allowed,
-          thread.ref,
-          added,
-          entry.lastSeenAt,
-        );
-        changed = true;
-      }
-    }
-    if (changed) this.changed();
-  }
-
-  private async stopLeftoverSandboxes(): Promise<void> {
-    const status = await this.sbxStatus(true);
-    if (status.state !== "ready") return;
-    const owned = this.store.ownedSandboxes();
-    for (const sandbox of await listSandboxes(status.binary).catch(() => [])) {
-      if (owned.has(sandbox.name) && sandbox.status === "running") {
-        await stopSandbox(status.binary, sandbox.name).catch(() => undefined);
-      }
-    }
-  }
-
-  private async removeUnusedSandboxes(): Promise<void> {
-    const status = await this.sbxStatus(true);
-    if (status.state !== "ready") return;
-    const owned = this.store.ownedSandboxes();
-    const existing = new Set((await listSandboxes(status.binary)).map((sandbox) => sandbox.name));
-    for (const name of [...owned]) {
-      if (this.inUse(name)) continue;
-      if (existing.has(name)) await removeSandbox(status.binary, name);
-      this.sandboxThreads.delete(name);
-      await this.store.setOwned(name, false);
-    }
-  }
-
   private changed(): void {
     for (const listener of this.listeners) listener();
   }

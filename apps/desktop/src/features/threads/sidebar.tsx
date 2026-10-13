@@ -480,7 +480,7 @@ export function Sidebar(props: SidebarProps) {
               }}
             />
             <button
-              aria-label="Open folder"
+              aria-label="Open repository"
               className="icon-button"
               type="button"
               onClick={() => {
@@ -840,42 +840,18 @@ function WorkspaceFolderContent(
                   type="button"
                   onClick={(event) =>
                     wsMenu.runWorkspaceMenuAction(event, () => {
-                      void api.openWorkspaceInFinder(workspace.id).catch((error: unknown) => {
-                        console.error("[renderer] openWorkspaceInFinder failed", error);
-                      });
+                      if (workspace.repositoryUrl)
+                        void api
+                          .openExternal(workspace.repositoryUrl)
+                          .catch((error: unknown) =>
+                            console.error("[renderer] open repository", error),
+                          );
                     })
                   }
+                  disabled={!workspace.repositoryUrl}
                 >
-                  Open folder
+                  Open on Git host
                 </button>
-                {linkedWorktree ? (
-                  <button
-                    className="workspace-menu__item workspace-menu__item--danger"
-                    type="button"
-                    onClick={(event) =>
-                      wsMenu.runWorkspaceMenuAction(event, () =>
-                        wsMenu.removeWorktree(
-                          linkedWorktree.rootWorkspaceId || workspace.id,
-                          linkedWorktree,
-                        ),
-                      )
-                    }
-                  >
-                    Remove worktree
-                  </button>
-                ) : (
-                  <button
-                    className="workspace-menu__item"
-                    type="button"
-                    onClick={(event) =>
-                      wsMenu.runWorkspaceMenuAction(event, () =>
-                        wsMenu.createWorktree(workspace.id),
-                      )
-                    }
-                  >
-                    Create permanent worktree
-                  </button>
-                )}
                 <button
                   className="workspace-menu__item"
                   type="button"

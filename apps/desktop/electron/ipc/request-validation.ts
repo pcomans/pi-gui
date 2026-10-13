@@ -40,7 +40,6 @@ import {
   type UpdateScheduledTaskInput,
 } from "../../contracts/scheduled-tasks";
 import { assertComposerAttachmentsAccepted } from "../../contracts/composer-attachments";
-import type { SandboxSettingsUpdate } from "../../contracts/sandbox";
 import {
   decodeTaskWorkbenchTemplate,
   type SaveTaskWorkbenchTemplateInput,
@@ -234,7 +233,7 @@ export function expectCreateSessionInput(value: unknown): CreateSessionInput {
 export function expectStartThreadInput(value: unknown): StartThreadInput {
   const record = expectRecord(value, "input");
   const environment = record.environment;
-  if (environment !== "local" && environment !== "worktree") {
+  if (environment !== "local" && environment !== "worktree" && environment !== "sandbox") {
     throw new TypeError("input.environment must be local or worktree");
   }
   return {
@@ -271,7 +270,7 @@ function expectExtensionFlags(value: unknown, label: string): ExtensionFlagValue
 export function expectForkThreadInput(value: unknown): ForkThreadInput {
   const record = expectRecord(value, "input");
   const environment = record.environment;
-  if (environment !== "local" && environment !== "worktree") {
+  if (environment !== "local" && environment !== "worktree" && environment !== "sandbox") {
     throw new TypeError("input.environment must be local or worktree");
   }
   const position = record.position;
@@ -389,30 +388,6 @@ export function expectNewMcpServerInput(value: unknown): NewMcpServerInput {
     command: expectNonEmptyString(record.command, "server.command"),
     args: record.args === undefined ? [] : [...expectStringArray(record.args, "server.args")],
   };
-}
-
-export function expectSandboxSettingsUpdate(value: unknown): SandboxSettingsUpdate {
-  const record = expectRecord(value, "update");
-  switch (record.kind) {
-    case "enabled":
-      return { kind: "enabled", enabled: expectBoolean(record.enabled, "update.enabled") };
-    case "remove-unused-sandboxes":
-      return { kind: "remove-unused-sandboxes" };
-    case "host-rule": {
-      const rule = record.rule;
-      if (rule !== null && rule !== "allow" && rule !== "block") {
-        throw new TypeError("update.rule must be allow, block or null");
-      }
-      return {
-        kind: "host-rule",
-        repoPath: expectNonEmptyString(record.repoPath, "update.repoPath"),
-        host: expectNonEmptyString(record.host, "update.host"),
-        rule,
-      };
-    }
-    default:
-      throw new TypeError("update.kind is not a sandbox setting");
-  }
 }
 
 export function expectCustomProviderProbeInput(value: unknown): CustomProviderProbeInput {

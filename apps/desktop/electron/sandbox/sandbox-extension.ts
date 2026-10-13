@@ -14,6 +14,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionFactory,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { SANDBOX_STATUS_KEY, type SandboxSessionState } from "../../contracts/sandbox";
@@ -21,7 +22,8 @@ import type { SandboxConnection, ToolSandboxSession, SandboxSessionRef } from ".
 
 export interface SandboxExtensionHost {
   readonly prompt?: string;
-  enabled(): boolean;
+  readonly cwd?: string;
+  instructions?(session: ToolSandboxSession): Promise<string>;
   openSession(
     ref: SandboxSessionRef,
     checkoutPath: string,
@@ -38,7 +40,7 @@ const STATUS_TEXT: Record<SandboxSessionState, string> = {
 };
 
 /**
- * Routes pi's built-in read, write, edit and bash tools, and `!` commands, into the session's Docker sandbox.
+ * Routes pi's built-in read, write, edit and bash tools, and `!` commands, into the session's remote sandbox.
  * Pi itself, model calls, MCP servers and other extensions stay on the host.
  */
 export function createSandboxExtension(
@@ -46,11 +48,7 @@ export function createSandboxExtension(
   host: SandboxExtensionHost,
 ): ExtensionFactory {
   return (pi: ExtensionAPI) => {
-    if (!host.enabled()) {
-      pi.on("session_start", (_event, ctx) => ctx.ui.setStatus(SANDBOX_STATUS_KEY, "Sandbox: off"));
-      return;
-    }
-    const cwd = workspace.path;
+    const cwd = host.cwd ?? workspace.path;
     let session: ToolSandboxSession | undefined;
     let context: ExtensionContext | undefined;
 
@@ -102,7 +100,7 @@ export function createSandboxExtension(
               : undefined;
           try {
             const result = await worker.exec(["/bin/bash", "-c", command], {
-              cwd: commandCwd,
+              cwd: host.cwd ?? commandCwd,
               env,
               onData,
               signal: controller.signal,
@@ -117,10 +115,19 @@ export function createSandboxExtension(
         }),
     };
 
-    pi.registerTool(createReadToolDefinition(cwd, { operations: fileOps }));
-    pi.registerTool(createWriteToolDefinition(cwd, { operations: fileOps }));
-    pi.registerTool(createEditToolDefinition(cwd, { operations: fileOps }));
-    pi.registerTool(createBashToolDefinition(cwd, { operations: bashOps }));
+    // Pi factories prefer the execution context's cwd over their construction cwd. Pi's cwd
+    // identifies local session metadata; only tool execution receives the remote repository cwd.
+    const inSandbox = <P extends ToolDefinition["parameters"], D>(
+      tool: ToolDefinition<P, D>,
+    ): ToolDefinition<P, D> => ({
+      ...tool,
+      execute: (id, parameters, signal, update, ctx) =>
+        tool.execute(id, parameters, signal, update, { ...ctx, cwd }),
+    });
+    pi.registerTool(inSandbox(createReadToolDefinition(cwd, { operations: fileOps })));
+    pi.registerTool(inSandbox(createWriteToolDefinition(cwd, { operations: fileOps })));
+    pi.registerTool(inSandbox(createEditToolDefinition(cwd, { operations: fileOps })));
+    pi.registerTool(inSandbox(createBashToolDefinition(cwd, { operations: bashOps })));
     // Pi's grep and find launch rg/fd on the host even with custom file operations, and ls offers
     // nothing bash does not, so sandboxed sessions withdraw them; rg, find and ls run in bash.
     pi.registerTool({ ...createGrepToolDefinition(cwd), exposure: "hidden" });
@@ -147,13 +154,11 @@ export function createSandboxExtension(
       context = undefined;
     });
 
-    pi.on("before_agent_start", (event) => {
-      session?.setReadonlyMounts(
-        (event.systemPromptOptions?.skills ?? []).map((skill) =>
-          path.basename(skill.filePath) === "SKILL.md" ? skill.baseDir : skill.filePath,
-        ),
-      );
-      return { systemPrompt: `${event.systemPrompt}\n\n${host.prompt ?? SANDBOX_PROMPT}` };
+    pi.on("before_agent_start", async (event) => {
+      const instructions = session && host.instructions ? await host.instructions(session) : "";
+      return {
+        systemPrompt: `${event.systemPrompt}\n\n${host.prompt ?? SANDBOX_PROMPT}${instructions ? `\n\nRepository instructions (${cwd}/AGENTS.md):\n${instructions}` : ""}`,
+      };
     });
 
     pi.registerCommand("sandbox", {
@@ -166,7 +171,7 @@ export function createSandboxExtension(
           return;
         }
         ctx.ui.notify(
-          `${statusText(session.state, session.message)}\nSandbox: ${session.sandbox ?? "not created yet"}\nMounted: ${session.checkoutPath}`,
+          `${statusText(session.state, session.message)}\nSandbox: ${session.sandbox ?? "not created yet"}\nWorkspace: ${session.checkoutPath}`,
           session.state === "failed" ? "error" : "info",
         );
       },
@@ -186,4 +191,5 @@ function isWithin(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-const SANDBOX_PROMPT = `Tool sandbox: the read, write, edit and bash tools run inside this thread's own Docker sandbox (Ubuntu Linux, user "agent" with passwordless sudo). The current working directory is mounted at the same path, so file paths are unchanged, and changes there are visible to the user. The rest of the host machine (home directory, other projects, credentials) is not available. Git, ripgrep (rg), gh, node and pnpm are installed; install more with \`sudo apt-get install\` (it lasts for this thread's sandbox). Use rg, find and ls through bash. Network access may be limited by the user's policy; a blocked request fails with an explanation, which you should report instead of retrying. GitHub credentials are available to git and gh as placeholders the host fills in.`;
+const SANDBOX_PROMPT =
+  "The read, write, edit and bash tools run in this thread’s remote sandbox. Use repository paths in the sandbox; the host checkout and credentials are unavailable.";

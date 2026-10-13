@@ -47,6 +47,7 @@ export function buildWorkspaceRecords(
       id: workspace.workspaceId,
       name: workspace.displayName,
       path: workspace.path,
+      ...(workspace.repositoryUrl ? { repositoryUrl: workspace.repositoryUrl } : {}),
       lastOpenedAt: workspace.lastOpenedAt,
       kind: rootWorkspaceId ? "worktree" : "primary",
       ...(rootWorkspaceId

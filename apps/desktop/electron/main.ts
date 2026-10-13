@@ -27,14 +27,12 @@ import { augmentPosixPath } from "../scripts/augment-path.cjs";
 import { DesktopAppStore } from "./application/app-store";
 import { WindowOwner } from "./windows/window-owner";
 import { PendingComposerDraftFlusher } from "./windows/pending-draft-flush";
-import { TurnCheckpointStore } from "./workbench/checkpoint-store";
 import {
   DesktopExtensionViewOwner,
   DESKTOP_EXTENSION_SCHEME,
 } from "./extensions/extension-view-owner";
 import { performExtensionViewHostAction } from "./extensions/extension-view-actions";
 import { extensionFrameDocument } from "./extensions/extension-frame-document";
-import { ReviewOwner } from "./workbench/review-owner";
 import { registerDesktopIpc } from "./ipc/register-desktop-ipc";
 import {
   createOrchestrationRuntimeExtension,
@@ -46,16 +44,13 @@ import {
   createScheduledTaskRuntimeTools,
   type ScheduledTaskRuntimeBridge,
 } from "./scheduled-tasks/scheduled-task-runtime";
-import { getChangedFiles, getFileDiff, stageFile } from "./platform/files/app-store-diff";
-import { listWorkspaceFiles, readWorkspaceFile } from "./platform/files/app-store-files";
-import { resolveExistingWorkspacePath } from "./platform/files/workspace-paths";
 import { MAIN_DEV_RELOAD_MARKER } from "./dev-reload-main-probe";
 import { NotificationManager } from "./platform/notification-manager";
 import { NotificationPermissionService } from "./platform/notification-permission";
 import { checkForUpdate, initUpdateChecker, openReleasesPage } from "./platform/update-checker";
 import { ThemeManager } from "./platform/theme-manager";
 import { windowBackgroundFor } from "../contracts/theme";
-import { TerminalService } from "./platform/terminal-service";
+import { RemoteTerminalService } from "./sandbox/remote-terminal";
 import type { DesktopAppState, DesktopAppViewState } from "../contracts/desktop-state";
 import {
   desktopCommands,
@@ -105,8 +100,7 @@ const themeManager = new ThemeManager();
 let mainWindow: BrowserWindow | null = null;
 let notificationManager: NotificationManager | undefined;
 let notificationPermissionService: NotificationPermissionService | undefined;
-let terminalService: TerminalService | undefined;
-let integratedTerminalShell = "";
+let terminalService: RemoteTerminalService | undefined;
 let applicationRelaunchRequested = false;
 
 function requestApplicationRelaunch(): void {
@@ -172,7 +166,6 @@ async function runScheduledTaskRuntimeToolForTest(
 let stopNotifications: (() => void) | undefined;
 let stopUpdateChecker: (() => void) | undefined;
 let stopPruningTerminals: (() => void) | undefined;
-let retainedTerminalWorkspacePathSignature = "";
 const terminalFocusedWebContentsIds = new Set<number>();
 const sidePanelFocusedWebContentsIds = new Set<number>();
 const surfaceCloseShortcutIds = new Set<number>();
@@ -282,14 +275,26 @@ const composerDraftFlusher = new PendingComposerDraftFlusher(DRAFT_FLUSH_TIMEOUT
 // Windows whose draft was flushed and whose close is now allowed through.
 const windowsClosingAfterDraftFlush = new WeakSet<BrowserWindow>();
 
-function getTerminalService(): TerminalService {
-  if (!terminalService) {
-    terminalService = new TerminalService({
-      getWorkspacePath: (workspaceId) => store.getWorkspacePath(workspaceId),
-      getIntegratedTerminalShell: () => integratedTerminalShell,
-      isPackaged: app.isPackaged,
-    });
-  }
+function remoteSession(target: SessionRef | undefined, workspacePath?: string) {
+  if (!target || !sandboxOwner) throw new Error("Select a thread to use its remote workspace.");
+  const workspace = store.workspaceRefFromState(target.workspaceId);
+  if (
+    !workspace ||
+    (workspacePath && workspace.path !== workspacePath) ||
+    !store
+      .snapshot()
+      .workspaces.some(
+        (entry) =>
+          entry.id === target.workspaceId &&
+          entry.sessions.some((session) => session.id === target.sessionId),
+      )
+  )
+    throw new Error("This thread is unavailable.");
+  return sandboxOwner.session(workspace, target);
+}
+
+function getTerminalService(): RemoteTerminalService {
+  terminalService ??= new RemoteTerminalService((target) => remoteSession(target));
   return terminalService;
 }
 
@@ -716,50 +721,12 @@ function runWindowScopedForWindow(
   return windowOwner.runStateAction(window, action, options);
 }
 
-async function pickWorkspacePathViaDialog(
-  parentWindow?: BrowserWindow | null,
-): Promise<string | undefined> {
-  const window = resolveDialogWindow(parentWindow);
-  const result = window
-    ? await dialog.showOpenDialog(window, {
-        properties: ["openDirectory"],
-        title: "Open workspace folder",
-      })
-    : await dialog.showOpenDialog({
-        properties: ["openDirectory"],
-        title: "Open workspace folder",
-      });
-  if (result.canceled || result.filePaths.length === 0) {
-    return undefined;
-  }
-  return result.filePaths[0] as string;
-}
-
-async function addPickedWorkspace(
-  window: BrowserWindow | null | undefined,
-  workspacePath: string,
-): Promise<DesktopAppState> {
-  const nextState = await store.addWorkspace(workspacePath);
-  if (!nextState.selectedWorkspaceId) {
-    return nextState;
-  }
-  const newThreadState =
-    nextState.activeView === "new-thread" ? nextState : await store.setActiveView("new-thread");
-  if (window) {
-    window.webContents.send(desktopIpc.workspacePicked, nextState.selectedWorkspaceId);
-  }
-  return newThreadState;
-}
-
 async function pickWorkspaceViaDialog(
   parentWindow?: BrowserWindow | null,
 ): Promise<DesktopAppState> {
   const window = resolveDialogWindow(parentWindow);
-  const workspacePath = await pickWorkspacePathViaDialog(window);
-  if (!workspacePath) {
-    return stateForWindow(window);
-  }
-  return runWindowScopedForWindow(window, () => addPickedWorkspace(window, workspacePath));
+  window?.webContents.send(desktopIpc.openRepositoryRequested);
+  return stateForWindow(window);
 }
 
 async function runManualUpdateCheck(): Promise<void> {
@@ -971,7 +938,6 @@ app
       | undefined;
     const orchestrationRuntimeBridge = createStoreBackedOrchestrationRuntimeBridge();
     const scheduledTaskRuntimeBridge = createStoreBackedScheduledTaskRuntimeBridge();
-    const checkpoints = new TurnCheckpointStore(configuredUserDataDir);
     const extensionViews: DesktopExtensionViewOwner = new DesktopExtensionViewOwner({
       frameDocument: extensionFrameDocument,
       hostAssets: {
@@ -1001,17 +967,14 @@ app
     protocol.handle(DESKTOP_EXTENSION_SCHEME, (request) =>
       extensionViews.assetResponse(request.url),
     );
-    // Tests opt in with PI_APP_SANDBOX=1, since their runners may have no QEMU.
     const sandbox = new SandboxOwner({
       userDataDir: configuredUserDataDir,
-      enabledByDefault: !appTestMode || process.env.PI_APP_SANDBOX === "1",
     });
-    await sandbox.initialize();
     sandboxOwner = sandbox;
     const driverOptions: NonNullable<
       ConstructorParameters<typeof DesktopAppStore>[0]["driverOptions"]
     > = {
-      onTurnCaptureBoundary: (boundary, signal) => checkpoints.recordBoundary(boundary, signal),
+      onTurnCaptureBoundary: (boundary, signal) => sandbox.capture(boundary, signal),
       // The store bounds each capture from when it starts; this only stops a stuck boundary,
       // including one waiting behind another run's capture in the same checkout.
       turnCaptureTimeoutMs: TURN_CAPTURE_BACKSTOP_MS,
@@ -1046,6 +1009,11 @@ app
     store = new DesktopAppStore({
       userDataDir: configuredUserDataDir,
       initialWorkspacePaths: resolveInitialWorkspacePaths(),
+      remoteWorkspaces: true,
+      prepareRemoteFork: async (workspace, source) => {
+        await sandbox.session(workspace, source).use(async () => undefined);
+      },
+      forkRemoteWorkspace: (workspace, source, target) => sandbox.fork(workspace, source, target),
       getWindow: () => mainWindow,
       shouldKeepSessionDialogs: (sessionRef) =>
         windowOwner?.isSessionVisibleInAnotherWindow(sessionRef) ?? false,
@@ -1062,11 +1030,9 @@ app
     });
     await store.initialize();
     themeManager.setMode(store.snapshot().themeMode);
-    integratedTerminalShell = (await store.getState()).integratedTerminalShell;
     nativeTheme.on("updated", refreshWindowBackgrounds);
     let windowBackgroundPresetId = store.snapshot().themePresetId;
     stopPruningTerminals = store.subscribe((state) => {
-      integratedTerminalShell = state.integratedTerminalShell;
       sandbox.stopArchived(({ workspaceId, sessionId }) =>
         Boolean(
           state.workspaces
@@ -1077,12 +1043,6 @@ app
       if (state.themePresetId !== windowBackgroundPresetId) {
         windowBackgroundPresetId = state.themePresetId;
         refreshWindowBackgrounds();
-      }
-      const workspacePaths = state.workspaces.map((workspace) => workspace.path);
-      const workspacePathSignature = workspacePaths.join("\0");
-      if (workspacePathSignature !== retainedTerminalWorkspacePathSignature) {
-        retainedTerminalWorkspacePathSignature = workspacePathSignature;
-        terminalService?.retainWorkspacePaths(workspacePaths);
       }
     });
     installApplicationMenu();
@@ -1159,18 +1119,18 @@ app
         state: store,
         workbench: store,
         extensionViews,
-        review: new ReviewOwner({
-          checkpoints,
-          userDataDir: app.getPath("userData"),
-          resolveCheckoutPath: (checkoutId) => store.getWorkspacePath(checkoutId),
-          validateTask: (target) =>
+        review: sandbox.workbench((target) => {
+          const workspace = store.workspaceRefFromState(target.workspaceId);
+          return workspace &&
             store
               .snapshot()
               .workspaces.some(
-                (workspace) =>
-                  workspace.id === target.workspaceId &&
-                  workspace.sessions.some((session) => session.id === target.sessionId),
-              ),
+                (entry) =>
+                  entry.id === target.workspaceId &&
+                  entry.sessions.some((session) => session.id === target.sessionId),
+              )
+            ? workspace
+            : undefined;
         }),
         workspace: store,
         conversation: store,
@@ -1236,15 +1196,16 @@ app
         readClipboardImage: readClipboardImageAttachment,
         validateComposerAttachments: (attachments) =>
           attachments.flatMap(validateComposerAttachmentPayload),
-        listWorkspaceFiles,
-        readWorkspaceFile,
-        revealWorkspaceFile: async (workspacePath, filePath) => {
-          const resolved = await resolveExistingWorkspacePath(workspacePath, filePath);
-          shell.showItemInFolder(resolved);
-        },
-        getChangedFiles,
-        getFileDiff,
-        stageFile,
+        listWorkspaceFiles: (workspacePath, options, target) =>
+          remoteSession(target, workspacePath).call("listFiles", options ?? {}),
+        readWorkspaceFile: (workspacePath, filePath, target) =>
+          remoteSession(target, workspacePath).call("readFile", { path: filePath }),
+        getChangedFiles: (workspacePath, target) =>
+          remoteSession(target, workspacePath).call("changedFiles", null),
+        getFileDiff: (workspacePath, filePath, target) =>
+          remoteSession(target, workspacePath).call("fileDiff", { path: filePath }),
+        stageFile: (workspacePath, filePath, options, target) =>
+          remoteSession(target, workspacePath).call("stageFile", { path: filePath, ...options }),
         relaunchApplication: requestApplicationRelaunch,
       },
     });
@@ -1345,7 +1306,7 @@ function resolveInitialWorkspacePaths(): readonly string[] {
   const raw = process.env.PI_APP_INITIAL_WORKSPACES;
   if (raw !== undefined) {
     return raw
-      .split(path.delimiter)
+      .split(raw.startsWith("https://") ? /\r?\n/ : path.delimiter)
       .map((entry) => entry.trim())
       .filter(Boolean);
   }

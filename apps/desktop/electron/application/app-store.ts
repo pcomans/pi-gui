@@ -1,4 +1,5 @@
 import { JsonCatalogStore } from "@pi-gui/catalogs/node";
+import { prepareRemoteRepository } from "../workspace/remote-repository";
 import { sessionKey } from "@pi-gui/session-driver";
 import type { ExtensionFlagValues, SessionSchemaInfo } from "@pi-gui/session-driver";
 import type { BrowserWindow } from "electron";
@@ -175,6 +176,13 @@ type ExtensionUiDialogRequest = Extract<
   readonly timeoutMs?: number;
 };
 export interface DesktopAppStoreOptions {
+  readonly prepareRemoteFork?: (workspace: WorkspaceRef, source: SessionRef) => Promise<void>;
+  readonly forkRemoteWorkspace?: (
+    workspace: WorkspaceRef,
+    source: SessionRef,
+    target: SessionRef,
+  ) => Promise<void>;
+  readonly remoteWorkspaces?: boolean;
   readonly userDataDir: string;
   readonly initialWorkspacePaths: readonly string[];
   readonly getWindow?: () => BrowserWindow | null;
@@ -262,6 +270,8 @@ export class DesktopAppStore {
   >();
   private readonly reportedCompatibilityIssuesBySession = new Map<string, Set<string>>();
   private readonly initialWorkspacePaths: readonly string[];
+  private readonly prepareRemoteWorkspace:
+    ((input: string) => ReturnType<typeof prepareRemoteRepository>) | undefined;
   private readonly getWindow: () => BrowserWindow | null;
   private readonly shouldKeepSessionDialogs: (sessionRef: SessionRef) => boolean;
   private composerDraftSyncTarget: SessionRef | undefined;
@@ -287,6 +297,9 @@ export class DesktopAppStore {
   private readonly extensionFlagsByWorkspace = new Map<string, ExtensionFlagValues>();
 
   constructor(options: DesktopAppStoreOptions) {
+    this.prepareRemoteWorkspace = options.remoteWorkspaces
+      ? (input) => prepareRemoteRepository(options.userDataDir, input)
+      : undefined;
     const catalogFilePath = join(options.userDataDir, "catalogs.json");
     this.catalogStore = new JsonCatalogStore({ catalogFilePath });
     const driverOptions: PiSdkDriverConfig = {
@@ -416,6 +429,9 @@ export class DesktopAppStore {
       driver: this.driver,
       catalogStore: this.catalogStore,
       worktreeManager: this.worktreeManager,
+      ...(this.prepareRemoteWorkspace ? { prepareWorkspace: this.prepareRemoteWorkspace } : {}),
+      ...(options.prepareRemoteFork ? { prepareRemoteFork: options.prepareRemoteFork } : {}),
+      ...(options.forkRemoteWorkspace ? { forkRemoteWorkspace: options.forkRemoteWorkspace } : {}),
       worktreeRoot: this.worktreeRoot,
       isAppWorktreePath: this.isAppWorktreePath,
       setRuntimeSnapshot: (workspaceId, snapshot) => {
@@ -2285,6 +2301,15 @@ export class DesktopAppStore {
     displayName: string | undefined,
   ): Promise<StartupDiagnostic | undefined> {
     try {
+      if (this.prepareRemoteWorkspace && workspacePath.startsWith("https://")) {
+        const prepared = await this.prepareRemoteWorkspace(workspacePath);
+        await this.driver.syncWorkspace(
+          prepared.path,
+          prepared.displayName,
+          prepared.repositoryUrl,
+        );
+        return undefined;
+      }
       const workspaceStat = await stat(workspacePath);
       if (!workspaceStat.isDirectory()) {
         throw new Error("Path is not a directory.");
@@ -3575,6 +3600,7 @@ export class DesktopAppStore {
       workspaceId: ws.id,
       path: ws.path,
       displayName: ws.name,
+      ...(ws.repositoryUrl ? { repositoryUrl: ws.repositoryUrl } : {}),
     };
   }
 

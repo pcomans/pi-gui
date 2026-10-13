@@ -7,7 +7,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { createSandboxExtension } from "../../electron/sandbox/sandbox-extension";
-import type { SandboxConnection, SandboxSession } from "../../electron/sandbox/sandbox-session";
+import type { SandboxConnection, ToolSandboxSession } from "../../electron/sandbox/sandbox-session";
 
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP478AARwzEcQAWohPx03ZM6QAAAABJRU5ErkJggg==",
@@ -37,7 +37,7 @@ async function sandboxRead(files: ReadonlyMap<string, Buffer>) {
   const session = {
     state: "idle",
     use: <T>(work: (connection: SandboxConnection) => Promise<T>) => work(connection),
-  } as unknown as SandboxSession;
+  } as unknown as ToolSandboxSession;
   const api = {
     registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
     on: (event: string, handler: typeof start) => {
@@ -52,7 +52,7 @@ async function sandboxRead(files: ReadonlyMap<string, Buffer>) {
   } as unknown as ExtensionContext;
   const extension = createSandboxExtension(
     { workspaceId: "image-test", path: ctx.cwd },
-    { enabled: () => true, openSession: () => session, closeSession: () => undefined },
+    { openSession: () => session, closeSession: () => undefined },
   );
   await extension(api);
   await start!(undefined, ctx);

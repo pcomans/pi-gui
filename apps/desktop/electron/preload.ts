@@ -31,7 +31,7 @@ import {
 import type { ExtensionActionEffect, ExtensionActionRequest } from "../contracts/extension-actions";
 import type { ClipboardImageRead } from "../contracts/composer-attachments";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "../contracts/workbench";
-import type { SandboxSettingsUpdate, SandboxSnapshot } from "../contracts/sandbox";
+import type { SandboxSnapshot } from "../contracts/sandbox";
 import type {
   TurnChangesInput,
   TurnChangesResult,
@@ -197,6 +197,11 @@ contextBridge.exposeInMainWorld("piApp", {
       ipcRenderer.removeListener(desktopIpc.workspacePicked, handle);
     };
   },
+  onOpenRepositoryRequested: (listener: () => void) => {
+    const handle = () => listener();
+    ipcRenderer.on(desktopIpc.openRepositoryRequested, handle);
+    return () => ipcRenderer.removeListener(desktopIpc.openRepositoryRequested, handle);
+  },
   onClipboardImagePasted: (listener: (result: ClipboardImageRead) => void) => {
     const handle = (_event: Electron.IpcRendererEvent, result: ClipboardImageRead) => {
       listener(result);
@@ -227,8 +232,6 @@ contextBridge.exposeInMainWorld("piApp", {
       desktopIpc.reorderPinnedSessions,
       pinnedSessionOrder,
     ) as Promise<DesktopAppState>,
-  openWorkspaceInFinder: (workspaceId: string) =>
-    ipcRenderer.invoke(desktopIpc.openWorkspaceInFinder, workspaceId) as Promise<void>,
   createWorktree: (input: CreateWorktreeInput) =>
     ipcRenderer.invoke(desktopIpc.createWorktree, input) as Promise<DesktopAppState>,
   removeWorktree: (input: RemoveWorktreeInput) =>
@@ -388,9 +391,6 @@ contextBridge.exposeInMainWorld("piApp", {
     ) as Promise<DesktopAppState>,
   getSandboxSnapshot: () =>
     ipcRenderer.invoke(desktopIpc.getSandboxSnapshot) as Promise<SandboxSnapshot>,
-  updateSandboxSettings: (update: SandboxSettingsUpdate) =>
-    ipcRenderer.invoke(desktopIpc.updateSandboxSettings, update) as Promise<SandboxSnapshot>,
-  prepareSandbox: () => ipcRenderer.invoke(desktopIpc.prepareSandbox) as Promise<SandboxSnapshot>,
   listMcpServers: (workspaceId: string) =>
     ipcRenderer.invoke(desktopIpc.listMcpServers, workspaceId) as Promise<McpServersSnapshot>,
   addMcpServer: (workspaceId: string, server: NewMcpServerInput) =>
@@ -583,8 +583,6 @@ contextBridge.exposeInMainWorld("piApp", {
       workspaceId,
       filePath,
     ) as Promise<WorkspaceFilePreview>,
-  revealWorkspaceFile: (workspaceId: string, filePath: string) =>
-    ipcRenderer.invoke(desktopIpc.revealWorkspaceFile, workspaceId, filePath) as Promise<void>,
   getChangedFiles: (workspaceId: string) =>
     ipcRenderer.invoke(desktopIpc.getChangedFiles, workspaceId) as Promise<ChangedFilesResult>,
   getFileDiff: (workspaceId: string, filePath: string) =>

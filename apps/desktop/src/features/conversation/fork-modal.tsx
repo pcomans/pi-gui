@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { NewThreadEnvironment } from "../../../contracts/desktop-state";
 import { trapDialogFocus } from "../../ui/dialog-focus";
 
@@ -7,8 +7,6 @@ interface ForkModalProps {
   readonly error?: string;
   /** Preview of the assistant response the fork will branch after. */
   readonly messagePreview?: string;
-  /** Whether forking into a new worktree is available for the source workspace. */
-  readonly canUseWorktree: boolean;
   readonly onClose: () => void;
   readonly onSubmit: (environment: NewThreadEnvironment) => void;
 }
@@ -17,11 +15,9 @@ export function ForkModal({
   submitting,
   error,
   messagePreview,
-  canUseWorktree,
   onClose,
   onSubmit,
 }: ForkModalProps) {
-  const [environment, setEnvironment] = useState<NewThreadEnvironment>("local");
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -94,38 +90,9 @@ export function ForkModal({
             </div>
           ) : null}
 
-          <div
-            className="new-thread__environment-group"
-            role="radiogroup"
-            aria-label="Fork environment"
-          >
-            <button
-              aria-pressed={environment === "local"}
-              className={`new-thread__environment ${environment === "local" ? "new-thread__environment--active" : ""}`}
-              data-testid="fork-environment-local"
-              type="button"
-              onClick={() => setEnvironment("local")}
-            >
-              <span>Same worktree</span>
-            </button>
-            <button
-              aria-pressed={environment === "worktree"}
-              className={`new-thread__environment ${environment === "worktree" ? "new-thread__environment--active" : ""}`}
-              data-testid="fork-environment-worktree"
-              disabled={!canUseWorktree}
-              title={canUseWorktree ? undefined : "This workspace can't create worktrees."}
-              type="button"
-              onClick={() => setEnvironment("worktree")}
-            >
-              <span>New worktree</span>
-            </button>
-          </div>
-
           <div className="tree-modal__footer">
             <div className="tree-modal__hint">
-              {environment === "worktree"
-                ? "A fresh worktree is created and the forked thread opens there."
-                : "The forked thread opens in the same folder as the original."}
+              A new sandbox keeps a copy of the source thread’s current files.
             </div>
             <div className="tree-modal__actions">
               <button
@@ -142,7 +109,7 @@ export function ForkModal({
                 data-testid="fork-modal-confirm"
                 disabled={submitting}
                 type="button"
-                onClick={() => onSubmit(environment)}
+                onClick={() => onSubmit("sandbox")}
               >
                 {submitting ? "Forking…" : "Fork thread"}
               </button>

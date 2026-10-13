@@ -31,6 +31,7 @@ export type MentionOption =
     };
 
 interface UseMentionMenuParams {
+  readonly sessionKey?: string;
   readonly composerDraft: string;
   readonly setComposerDraft: (draft: string) => void;
   readonly composerRef: RefObject<HTMLTextAreaElement | null>;
@@ -62,6 +63,7 @@ function extractMentionQuery(text: string): { query: string; atIndex: number } |
 }
 
 export function useMentionMenu({
+  sessionKey,
   composerDraft,
   setComposerDraft,
   composerRef,
@@ -78,18 +80,6 @@ export function useMentionMenu({
   const [suppressed, setSuppressed] = useState(false);
   const composerDraftRef = useRef(composerDraft);
   composerDraftRef.current = composerDraft;
-
-  // Fetch file list when workspace changes
-  useEffect(() => {
-    if (!api || !workspaceId) {
-      setAllFiles([]);
-      return;
-    }
-    void api
-      .listWorkspaceFiles(workspaceId)
-      .then(setAllFiles)
-      .catch(() => setAllFiles([]));
-  }, [api, workspaceId]);
 
   // Reset suppression when draft changes
   useEffect(() => {
@@ -124,6 +114,25 @@ export function useMentionMenu({
     }
     return extractMentionQuery(composerDraft);
   }, [composerDraft, suppressed]);
+
+  const mentionActive = mentionMatch !== null;
+  useEffect(() => {
+    let current = true;
+    setAllFiles([]);
+    if (mentionActive && api && workspaceId) {
+      void api.listWorkspaceFiles(workspaceId, { force: true }).then(
+        (files) => {
+          if (current) setAllFiles(files);
+        },
+        () => {
+          if (current) setAllFiles([]);
+        },
+      );
+    }
+    return () => {
+      current = false;
+    };
+  }, [api, workspaceId, sessionKey, mentionActive]);
 
   const mentionOptions = useMemo<MentionOption[]>(() => {
     if (!mentionMatch) {

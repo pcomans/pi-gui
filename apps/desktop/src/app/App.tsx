@@ -490,7 +490,6 @@ export default function App() {
     closeForkModal,
     openForkModal,
     handleForkSubmit,
-    canUseWorktree,
   } = useTreeForkModals({
     api,
     snapshot,
@@ -498,7 +497,6 @@ export default function App() {
     selectedWorkspace,
     selectedSession,
     selectedSessionKey,
-    rootWorkspace,
     activeView: snapshot?.activeView,
     setComposerDraft,
     focusComposer,
@@ -537,6 +535,7 @@ export default function App() {
   );
 
   const mentionMenu = useMentionMenu({
+    sessionKey: selectedSessionKey,
     composerDraft,
     setComposerDraft,
     composerRef,
@@ -1142,7 +1141,7 @@ export default function App() {
               <section className="canvas canvas--empty">
                 <div className="empty-panel">
                   <div className="session-header__eyebrow">Workspace</div>
-                  <h1>Open a folder to start</h1>
+                  <h1>Open a repository to start</h1>
                   <p>Add a project folder before creating a new thread.</p>
                 </div>
               </section>
@@ -1301,7 +1300,6 @@ export default function App() {
                   error={forkModalState.error}
                   submitting={forkModalState.submitting}
                   messagePreview={forkModalState.messagePreview}
-                  canUseWorktree={canUseWorktree}
                   onClose={closeForkModal}
                   onSubmit={handleForkSubmit}
                 />
@@ -1332,7 +1330,7 @@ export default function App() {
             <section className="canvas canvas--empty">
               <div className="empty-panel">
                 <div className="session-header__eyebrow">Workspace</div>
-                <h1>Open a folder to start</h1>
+                <h1>Open a repository to start</h1>
                 <p>
                   Add project folders, group sessions under them, and jump between threads from the
                   sidebar.

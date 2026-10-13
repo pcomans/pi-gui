@@ -16,7 +16,7 @@ import type {
 import type { ClipboardImageRead } from "./composer-attachments";
 import type { SessionRef } from "@pi-gui/session-driver/types";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "./workbench";
-import type { SandboxSettingsUpdate, SandboxSnapshot } from "./sandbox";
+import type { SandboxSnapshot } from "./sandbox";
 import type {
   TurnChangesInput,
   TurnChangesResult,
@@ -122,6 +122,7 @@ export const desktopIpc = {
   selectedTranscriptChanged: "pi-gui:selected-transcript-changed",
   appCommand: "pi-gui:app-command",
   workspacePicked: "pi-gui:workspace-picked",
+  openRepositoryRequested: "pi-gui:open-repository-requested",
   clipboardImagePasted: "pi-gui:clipboard-image-pasted",
   addWorkspacePath: "pi-gui:add-workspace-path",
   pickWorkspace: "pi-gui:pick-workspace",
@@ -130,7 +131,6 @@ export const desktopIpc = {
   removeWorkspace: "pi-gui:remove-workspace",
   reorderWorkspaces: "pi-gui:reorder-workspaces",
   reorderPinnedSessions: "pi-gui:reorder-pinned-sessions",
-  openWorkspaceInFinder: "pi-gui:open-workspace-in-finder",
   createWorktree: "pi-gui:create-worktree",
   removeWorktree: "pi-gui:remove-worktree",
   openSkillInFinder: "pi-gui:open-skill-in-finder",
@@ -179,8 +179,6 @@ export const desktopIpc = {
   setMcpServerEnabled: "pi-gui:set-mcp-server-enabled",
   setCodemodeAlwaysOn: "pi-gui:set-codemode-always-on",
   getSandboxSnapshot: "pi-gui:get-sandbox-snapshot",
-  updateSandboxSettings: "pi-gui:update-sandbox-settings",
-  prepareSandbox: "pi-gui:prepare-sandbox",
   respondToHostUiRequest: "pi-gui:respond-to-host-ui-request",
   setNotificationPreferences: "pi-gui:set-notification-preferences",
   setIntegratedTerminalShell: "pi-gui:set-integrated-terminal-shell",
@@ -220,7 +218,6 @@ export const desktopIpc = {
   toggleWindowMaximize: "pi-gui:toggle-window-maximize",
   listWorkspaceFiles: "pi-gui:list-workspace-files",
   readWorkspaceFile: "pi-gui:read-workspace-file",
-  revealWorkspaceFile: "pi-gui:reveal-workspace-file",
   getChangedFiles: "pi-gui:get-changed-files",
   getFileDiff: "pi-gui:get-file-diff",
   stageFile: "pi-gui:stage-file",
@@ -706,6 +703,7 @@ export interface PiDesktopApi {
   onSelectedTranscriptChanged(listener: PiDesktopSelectedTranscriptListener): () => void;
   onCommand(listener: (command: PiDesktopCommand) => void): () => void;
   onWorkspacePicked(listener: (workspaceId: string) => void): () => void;
+  onOpenRepositoryRequested(listener: () => void): () => void;
   onClipboardImagePasted(listener: (result: ClipboardImageRead) => void): () => void;
   getPathForFile(file: File): string;
   addWorkspacePath(path: string): Promise<DesktopAppState>;
@@ -715,7 +713,6 @@ export interface PiDesktopApi {
   removeWorkspace(workspaceId: string): Promise<DesktopAppState>;
   reorderWorkspaces(workspaceOrder: readonly string[]): Promise<DesktopAppState>;
   reorderPinnedSessions(pinnedSessionOrder: readonly string[]): Promise<DesktopAppState>;
-  openWorkspaceInFinder(workspaceId: string): Promise<void>;
   createWorktree(input: CreateWorktreeInput): Promise<DesktopAppState>;
   removeWorktree(input: RemoveWorktreeInput): Promise<DesktopAppState>;
   openSkillInFinder(workspaceId: string, filePath: string): Promise<void>;
@@ -787,9 +784,7 @@ export interface PiDesktopApi {
   ): Promise<DesktopAppState>;
   listMcpServers(workspaceId: string): Promise<McpServersSnapshot>;
   getSandboxSnapshot(): Promise<SandboxSnapshot>;
-  updateSandboxSettings(update: SandboxSettingsUpdate): Promise<SandboxSnapshot>;
   /** Build the sandbox image now, or retry after a failure. */
-  prepareSandbox(): Promise<SandboxSnapshot>;
   addMcpServer(workspaceId: string, server: NewMcpServerInput): Promise<DesktopAppState>;
   removeMcpServer(workspaceId: string, name: string): Promise<DesktopAppState>;
   setMcpServerEnabled(
@@ -881,7 +876,6 @@ export interface PiDesktopApi {
     options?: { readonly force?: boolean },
   ): Promise<string[]>;
   readWorkspaceFile(workspaceId: string, filePath: string): Promise<WorkspaceFilePreview>;
-  revealWorkspaceFile(workspaceId: string, filePath: string): Promise<void>;
   getChangedFiles(workspaceId: string): Promise<ChangedFilesResult>;
   getFileDiff(workspaceId: string, filePath: string): Promise<string>;
   stageFile(workspaceId: string, filePath: string, stagingSourcePath?: string): Promise<void>;

@@ -1,59 +1,25 @@
 import { expect, test } from "@playwright/test";
 import {
-  nodeModulesDirs,
-  nodeModulesMountScript,
+  parseProjectSandboxConfig,
   sandboxSetupScript,
 } from "../../electron/sandbox/sandbox-setup";
 
-const checkout = "/Users/me/Library/Application Support/pi/worktrees/repo";
-
-test("the sandbox keeps the checkout's node_modules and one per tracked package", () => {
-  expect(
-    nodeModulesDirs(checkout, [
-      "package.json",
-      "packages/b/package.json",
-      "apps/my app/package.json",
-      "apps/my app/package.json",
-      "vendor/node_modules/dep/package.json",
-      "docs/example-package.json",
-    ]),
-  ).toEqual([
-    `${checkout}/node_modules`,
-    `${checkout}/apps/my app/node_modules`,
-    `${checkout}/packages/b/node_modules`,
-  ]);
-});
-
-test("a checkout without tracked packages still keeps its own node_modules", () => {
-  expect(nodeModulesDirs(checkout, [])).toEqual([`${checkout}/node_modules`]);
-});
-
-test("the mount script quotes paths and skips folders already mounted", () => {
-  const dir = `${checkout}/it's/node_modules`;
-  const script = nodeModulesMountScript([dir]);
-  const quoted = `'${checkout}/it'\\''s/node_modules'`;
-  expect(script.startsWith("set -eu\n")).toBe(true);
-  expect(script).toMatch(
-    new RegExp(
-      `^mountpoint -q ${escape(quoted)} \\|\\| \\{ mkdir -p (/var/lib/pi-gui/node_modules/[0-9a-f]{16}) && chown agent:agent \\1 && mount --bind \\1 ${escape(quoted)}; \\}$`,
-      "m",
+test("remote setup uses managed pnpm and runs project packages and commands once", () => {
+  const script = sandboxSetupScript(
+    parseProjectSandboxConfig(
+      JSON.stringify({
+        packages: ["build-essential"],
+        setup: ["test -f README.md", "echo PROJECT_SETUP"],
+      }),
     ),
   );
-  // One sandbox folder per path, the same on every start.
-  expect(nodeModulesMountScript([dir])).toBe(script);
-  const own = (source: string) => source.match(/\/var\/lib\/pi-gui\/node_modules\/\w+/)?.[0];
-  expect(own(nodeModulesMountScript([`${checkout}/node_modules`]))).not.toBe(own(script));
+  expect(script).not.toContain("npm install --global");
+  expect(script).toContain("install -y -qq build-essential");
+  expect(script).toContain("test -f README.md\necho PROJECT_SETUP");
+  expect(script).toContain("&& exit 0");
 });
 
-function escape(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-test("managed images keep their pnpm while still running the project's setup", () => {
-  const config = { packages: ["build-essential"], setup: "echo PROJECT_SETUP" };
-  expect(sandboxSetupScript(config)).toContain("npm install --global");
-  const managed = sandboxSetupScript(config, false);
-  expect(managed).not.toContain("npm install --global");
-  expect(managed).toContain("install -y -qq build-essential");
-  expect(managed).toContain("echo PROJECT_SETUP");
+test("setup rejects package names that could inject shell commands", () => {
+  for (const name of ["foo; touch bad", "$(whoami)", "-y", "foo bar"])
+    expect(() => parseProjectSandboxConfig(JSON.stringify({ packages: [name] }))).toThrow();
 });
