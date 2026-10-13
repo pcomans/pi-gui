@@ -115,11 +115,13 @@ export function shouldPersistSnapshotForAgentEvent(eventType: string): boolean {
 }
 
 export function workspaceToRef(workspace: {
+  repositoryUrl?: string;
   workspaceId: string;
   path: string;
   displayName: string;
 }): WorkspaceRef {
   return {
+    ...(workspace.repositoryUrl ? { repositoryUrl: workspace.repositoryUrl } : {}),
     workspaceId: workspace.workspaceId,
     path: workspace.path,
     displayName: workspace.displayName,

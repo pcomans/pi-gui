@@ -73,6 +73,7 @@ function isWorkspaceEntry(value: unknown): value is WorkspaceCatalogEntry {
   return (
     isRecord(value) &&
     hasStrings(value, ["workspaceId", "path", "displayName", "lastOpenedAt"]) &&
+    hasOptionalStrings(value, ["repositoryUrl"]) &&
     typeof value.sortOrder === "number" &&
     Number.isFinite(value.sortOrder) &&
     (value.pinned === undefined || typeof value.pinned === "boolean")

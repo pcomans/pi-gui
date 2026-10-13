@@ -452,9 +452,16 @@ export class SessionSupervisor {
     return workspace;
   }
 
-  async syncWorkspace(path: string, displayName?: string): Promise<SyncWorkspaceResult> {
-    const workspace = await createCanonicalWorkspaceRef(path, displayName);
+  async syncWorkspace(
+    path: string,
+    displayName?: string,
+    repositoryUrl?: string,
+  ): Promise<SyncWorkspaceResult> {
+    let workspace = await createCanonicalWorkspaceRef(path, displayName);
     return this.runWorkspaceMutation(workspace.workspaceId, async () => {
+      const current = await this.catalogs.workspaces.getWorkspace(workspace.workspaceId);
+      const source = repositoryUrl ?? current?.repositoryUrl;
+      if (source) workspace = { ...workspace, repositoryUrl: source };
       await this.registerWorkspaceRefNow(workspace);
       return this.syncWorkspaceNow(workspace);
     });
@@ -2994,6 +3001,7 @@ export class SessionSupervisor {
 
   private async registerWorkspaceRefNow(workspace: WorkspaceRef): Promise<void> {
     const current = await this.catalogs.workspaces.getWorkspace(workspace.workspaceId);
+    const repositoryUrl = workspace.repositoryUrl ?? current?.repositoryUrl;
     await this.catalogs.workspaces.upsertWorkspace({
       workspaceId: workspace.workspaceId,
       path: workspace.path,
@@ -3001,6 +3009,7 @@ export class SessionSupervisor {
       lastOpenedAt: nowIso(),
       sortOrder: current?.sortOrder ?? (await this.deriveWorkspaceSortOrder(workspace.workspaceId)),
       pinned: current?.pinned ?? false,
+      ...(repositoryUrl ? { repositoryUrl } : {}),
     });
   }
 

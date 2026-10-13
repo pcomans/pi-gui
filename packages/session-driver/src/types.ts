@@ -11,6 +11,8 @@ export type RunId = string;
 export type Timestamp = string;
 
 export interface WorkspaceRef {
+  /** Repository source for a remote workspace. `path` holds local Pi metadata only. */
+  readonly repositoryUrl?: string;
   readonly workspaceId: WorkspaceId;
   readonly path: string;
   readonly displayName?: string;

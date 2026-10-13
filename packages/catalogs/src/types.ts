@@ -3,6 +3,7 @@ import type { SessionRef, SessionStatus, WorkspaceId } from "@pi-gui/session-dri
 export type { SessionRef, SessionStatus, WorkspaceId };
 
 export interface WorkspaceCatalogEntry {
+  repositoryUrl?: string;
   workspaceId: WorkspaceId;
   path: string;
   displayName: string;
