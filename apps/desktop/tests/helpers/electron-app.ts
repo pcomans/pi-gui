@@ -1856,7 +1856,7 @@ export async function startThreadFromSurface(
     readonly workspaceName?: string;
   } = {},
 ): Promise<void> {
-  const { environment = "local", prompt = "Start thread", workspaceName } = options;
+  const { environment = "sandbox", prompt = "Start thread", workspaceName } = options;
 
   await openNewThread(window);
   if (workspaceName) {
@@ -1864,8 +1864,6 @@ export async function startThreadFromSurface(
   }
   if (environment === "worktree") {
     await window.getByRole("button", { name: "Worktree", exact: true }).click();
-  } else {
-    await window.getByRole("button", { name: "Local", exact: true }).click();
   }
   const startButton = window.getByRole("button", { name: "Start thread" });
   if (prompt) {
