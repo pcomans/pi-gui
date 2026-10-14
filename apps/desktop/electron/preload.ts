@@ -391,6 +391,16 @@ contextBridge.exposeInMainWorld("piApp", {
     ) as Promise<DesktopAppState>,
   getSandboxSnapshot: () =>
     ipcRenderer.invoke(desktopIpc.getSandboxSnapshot) as Promise<SandboxSnapshot>,
+  getKitSnapshot: () =>
+    ipcRenderer.invoke(desktopIpc.getKitSnapshot) as Promise<
+      import("../contracts/kit").KitSnapshot
+    >,
+  connectKit: () =>
+    ipcRenderer.invoke(desktopIpc.connectKit) as Promise<import("../contracts/kit").KitSnapshot>,
+  refreshKit: () =>
+    ipcRenderer.invoke(desktopIpc.refreshKit) as Promise<import("../contracts/kit").KitSnapshot>,
+  disconnectKit: () =>
+    ipcRenderer.invoke(desktopIpc.disconnectKit) as Promise<import("../contracts/kit").KitSnapshot>,
   listMcpServers: (workspaceId: string) =>
     ipcRenderer.invoke(desktopIpc.listMcpServers, workspaceId) as Promise<McpServersSnapshot>,
   addMcpServer: (workspaceId: string, server: NewMcpServerInput) =>

@@ -173,6 +173,10 @@ export const desktopIpc = {
   setScopedModelPatterns: "pi-gui:set-scoped-model-patterns",
   setSkillEnabled: "pi-gui:set-skill-enabled",
   setExtensionEnabled: "pi-gui:set-extension-enabled",
+  getKitSnapshot: "pi-gui:get-kit-snapshot",
+  connectKit: "pi-gui:connect-kit",
+  refreshKit: "pi-gui:refresh-kit",
+  disconnectKit: "pi-gui:disconnect-kit",
   listMcpServers: "pi-gui:list-mcp-servers",
   addMcpServer: "pi-gui:add-mcp-server",
   removeMcpServer: "pi-gui:remove-mcp-server",
@@ -783,6 +787,10 @@ export interface PiDesktopApi {
     enabled: boolean,
   ): Promise<DesktopAppState>;
   listMcpServers(workspaceId: string): Promise<McpServersSnapshot>;
+  getKitSnapshot(): Promise<import("./kit").KitSnapshot>;
+  connectKit(): Promise<import("./kit").KitSnapshot>;
+  refreshKit(): Promise<import("./kit").KitSnapshot>;
+  disconnectKit(): Promise<import("./kit").KitSnapshot>;
   getSandboxSnapshot(): Promise<SandboxSnapshot>;
   /** Build the sandbox image now, or retry after a failure. */
   addMcpServer(workspaceId: string, server: NewMcpServerInput): Promise<DesktopAppState>;

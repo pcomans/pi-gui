@@ -17,6 +17,7 @@ import { SettingsAppearanceSection } from "./settings-appearance-section";
 import { SettingsGeneralSection } from "./settings-general-section";
 import { type McpSettingsActions, SettingsMcpSection } from "./settings-mcp-section";
 import { SettingsSandboxSection } from "./settings-sandbox-section";
+import { SettingsKitSection } from "./settings-kit-section";
 import { SettingsModelsSection } from "./settings-models-section";
 import { SettingsNotificationsSection } from "./settings-notifications-section";
 import { SettingsProvidersSection } from "./settings-providers-section";
@@ -185,6 +186,7 @@ export function SettingsView({
           ) : null}
 
           {section === "sandbox" ? <SettingsSandboxSection /> : null}
+          {section === "kit" ? <SettingsKitSection /> : null}
 
           {section === "mcp" && workspace ? (
             <SettingsMcpSection actions={mcpActions} workspaceId={workspace.id} />

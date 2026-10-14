@@ -22,6 +22,7 @@ import type { RemoteTerminalService } from "../sandbox/remote-terminal";
 import type { ThemeManager } from "../platform/theme-manager";
 import type { WindowOwner } from "../windows/window-owner";
 import type { SandboxOwner } from "../sandbox/sandbox-owner";
+import type { KitOwner } from "../kit/kit-owner";
 import type { PendingComposerDraftFlusher } from "../windows/pending-draft-flush";
 import { WorkbenchRequests, type WorkbenchOwner } from "./workbench-requests";
 import type { DesktopExtensionViewOwner } from "../extensions/extension-view-owner";
@@ -179,6 +180,7 @@ export interface DesktopIpcOwners {
   readonly scheduledTasks: ScheduledTaskOwner;
   readonly settings: SettingsOwner;
   readonly sandbox: Pick<SandboxOwner, "snapshot">;
+  readonly kit: Pick<KitOwner, "snapshot" | "connect" | "refresh" | "disconnect">;
   readonly composerDraftFlush: Pick<PendingComposerDraftFlusher, "acknowledge" | "flush">;
 }
 
@@ -598,6 +600,26 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.getSandboxSnapshot, (event) => {
     windows.windowForSender(event.sender);
     return owners.sandbox.snapshot();
+  });
+  ipcMain.handle(desktopIpc.getKitSnapshot, (event) => {
+    windows.windowForSender(event.sender);
+    return owners.kit.snapshot();
+  });
+  ipcMain.handle(desktopIpc.connectKit, (event) => {
+    windows.windowForSender(event.sender);
+    return owners.kit.connect();
+  });
+  ipcMain.handle(desktopIpc.refreshKit, async (event) => {
+    windows.windowForSender(event.sender);
+    const snapshot = await owners.kit.refresh();
+    await owners.settings.refreshRuntime();
+    return snapshot;
+  });
+  ipcMain.handle(desktopIpc.disconnectKit, async (event) => {
+    windows.windowForSender(event.sender);
+    const snapshot = await owners.kit.disconnect();
+    await owners.settings.refreshRuntime();
+    return snapshot;
   });
   ipcMain.handle(desktopIpc.listMcpServers, (event, rawWorkspaceId: unknown) => {
     windows.windowForSender(event.sender);

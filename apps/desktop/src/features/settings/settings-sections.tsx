@@ -97,6 +97,15 @@ export const SETTINGS_SECTIONS = [
     description: () => "Add, remove and switch the MCP servers pi connects in each thread.",
     needsWorkspace: true,
   },
+  {
+    id: "kit",
+    title: "Kit",
+    group: "Agent",
+    icon: <PlugIcon />,
+    keywords: ["kit", "vercel", "connections", "authentication", "cloud", "gateway", "missing"],
+    description: () => "Connect your services and models through Vercel Kit.",
+    needsWorkspace: false,
+  },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];

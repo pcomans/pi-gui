@@ -9,6 +9,7 @@ import {
   net,
   protocol,
   shell,
+  safeStorage,
   type MenuItemConstructorOptions,
   type MessageBoxOptions,
 } from "electron";
@@ -34,6 +35,8 @@ import {
 import { performExtensionViewHostAction } from "./extensions/extension-view-actions";
 import { extensionFrameDocument } from "./extensions/extension-frame-document";
 import { registerDesktopIpc } from "./ipc/register-desktop-ipc";
+import { KitOwner } from "./kit/kit-owner";
+import { createKitExtension } from "./kit/kit-extension";
 import {
   createOrchestrationRuntimeExtension,
   createOrchestrationRuntimeTools,
@@ -95,6 +98,7 @@ const TURN_CAPTURE_BACKSTOP_MS = 10_000;
 let store: DesktopAppStore;
 let extensionViewOwner: DesktopExtensionViewOwner | undefined;
 let sandboxOwner: SandboxOwner | undefined;
+let kitOwner: KitOwner | undefined;
 let windowOwner: WindowOwner;
 const themeManager = new ThemeManager();
 let mainWindow: BrowserWindow | null = null;
@@ -971,6 +975,21 @@ app
       userDataDir: configuredUserDataDir,
     });
     sandboxOwner = sandbox;
+    const kit = new KitOwner({
+      userDataDir: configuredUserDataDir,
+      baseUrl: process.env.PI_GUI_KIT_URL,
+      encrypt: (value) => {
+        if (
+          !safeStorage.isEncryptionAvailable() ||
+          (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text")
+        )
+          throw new Error("Kit requires secure OS credential storage.");
+        return safeStorage.encryptString(value);
+      },
+      decrypt: (value) => safeStorage.decryptString(value),
+    });
+    await kit.initialize();
+    kitOwner = kit;
     const driverOptions: NonNullable<
       ConstructorParameters<typeof DesktopAppStore>[0]["driverOptions"]
     > = {
@@ -986,6 +1005,13 @@ app
       openUrl: openMcpSignInUrl,
       sessionExtensions: (workspace) => sandbox.sessionExtensions(workspace),
       builtinExtensions: [
+        {
+          name: "pi-gui-kit",
+          displayName: "Kit",
+          description:
+            "Kit service tools and AI Gateway. Pi and command MCP servers still run locally.",
+          factory: createKitExtension(kit),
+        },
         {
           name: "pi-gui-thread-orchestration",
           displayName: "Thread orchestration",
@@ -1138,6 +1164,7 @@ app
         scheduledTasks: store,
         settings: store,
         sandbox,
+        kit,
         composerDraftFlush: composerDraftFlusher,
       },
       capabilities: {
@@ -1252,6 +1279,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
+  kitOwner?.close();
   stopNotifications?.();
   stopNotifications = undefined;
   notificationManager = undefined;

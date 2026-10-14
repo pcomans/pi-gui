@@ -23,6 +23,19 @@ pnpm dev
 
 `VERCEL_TOKEN` can also be supplied through the environment. The app otherwise reads the existing Vercel CLI login. Model authentication remains in Pi’s normal local agent profile. Settings → Sandbox reports configuration; execution always uses Vercel. There is no host tool fallback or sandbox-off switch.
 
+Settings → Kit connects the published `@vercel/kit` 0.15.0 SDK to your Kit account
+through browser OAuth with PKCE. Refresh Kit after authorizing, then select a
+**Kit AI Gateway** model under Models for an open repository. Kit provides its
+service and skill tools through Pi's extension API; permissions and approvals
+remain in Kit. Its agent tokens are encrypted with OS credential storage and
+refreshed by the SDK. Gateway keys stay in main-process memory, separate from
+Pi's provider credentials and the sandbox. Kit installation currently requires
+access to the private Vercel npm scope.
+
+Kit does not move Pi or command-based MCP servers remotely and does not supply
+Git's authenticated clone/push transport. See [MISSING.md](../../MISSING.md) for
+the explicit remaining features and limitations.
+
 For this workspace, `.context/run-vercel-poc.sh` supplies the selected `pi-gui-sandbox-poc` project and isolated profile. It opens this repository’s GitHub URL rather than copying the local Conductor checkout. Unpushed local edits are therefore not part of a sandbox clone.
 
 ## Implementation
@@ -63,3 +76,19 @@ pnpm --filter @pi-gui/desktop run test:e2e:runner -- \
 ```
 
 The scripted-provider test uses real Vercel compute through Electron for tools, Files, Review, staging, PTY, cancellation, stop/resume and isolated snapshot forks. The second test additionally requires `PI_APP_REAL_AUTH=1`, `PI_APP_REAL_AUTH_SOURCE_DIR`, `PI_GUI_PROVIDER` and `PI_GUI_MODEL` and drives an actual provider with test hooks absent. Neither fixtures nor a skipped provider test count as real-provider proof.
+
+`tests/core/kit-settings.spec.ts` verifies the real Settings surface with a local
+OAuth issuer, encrypted persistence, service discovery and disconnect. The
+opt-in `tests/production/kit-vercel.spec.ts` uses actual browser authorization,
+a Kit model and tools, and Vercel compute with test hooks absent:
+
+```sh
+PI_APP_KIT_E2E=1 \
+VERCEL_TEAM_ID=team_example VERCEL_PROJECT_ID=prj_example \
+pnpm --filter @pi-gui/desktop run test:e2e:runner -- \
+  apps/desktop/tests/production/kit-vercel.spec.ts --retries=0
+```
+
+Authorize pi-gui in the browser opened by the test. `PI_APP_KIT_PROFILE` can reuse
+the retained private test profile to verify saved sign-in after restart. Do not
+include that credential-bearing directory in shared proof artifacts.
