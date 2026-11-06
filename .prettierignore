@@ -47,6 +47,7 @@
 /video/playwright-report/
 **/*.tsbuildinfo
 .artifacts/
+.context/
 .cursor/
 .pnpm-store/
 .worktrees/

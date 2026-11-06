@@ -23,6 +23,7 @@ const typedProject = (files, project) => ({
 export default [
   {
     ignores: [
+      ".context/**",
       "**/node_modules/**",
       "examples/desktop-extensions/*/dist/**",
       // Generated output lives at repository/workspace roots, never anywhere
