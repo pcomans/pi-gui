@@ -7,6 +7,56 @@
 import type { PluralCategory, PluralVariantKey } from "../plural";
 
 export const en = {
+  "sandbox.checking": "Checking Docker Sandboxes…",
+  "sandbox.title": "Tool sandbox",
+  "sandbox.description":
+    "pi's read, write, edit and bash tools run in each thread's own Docker sandbox (a Linux microVM) that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac.",
+  "sandbox.enabled": "Run tools in a sandbox",
+  "sandbox.backend": "Docker Sandboxes",
+  "sandbox.threads": "Threads",
+  "sandbox.sandboxes": "Sandboxes",
+  "sandbox.network": "Network",
+  "sandbox.networkDescription":
+    "Sandboxes can reach any host you have not blocked; services on this Mac (host.docker.internal, localhost) stay blocked unless you allow them. Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting.",
+  "sandbox.hostPlaceholder": "e.g. *.example.com",
+  "sandbox.appliesToNewThreads":
+    "Applies to threads opened from now on. Reopen the app to switch threads that are already open.",
+  "sandbox.unsupported": "Not available on this platform.",
+  "sandbox.allowedByYou": "Allowed by you",
+  "sandbox.blockedByYou": "Blocked by you",
+  "sandbox.hostService": "A service on this Mac, blocked unless you allow it",
+  "sandbox.notContacted": "Not contacted yet",
+  "sandbox.block": "Block",
+  "sandbox.allow": "Allow",
+  "sandbox.unblock": "Unblock",
+  "sandbox.ready": "Ready. Each thread gets its own sandbox on its first tool call.",
+  "sandbox.signedOut":
+    "Installed but not signed in; sandboxed tools fail until it is. Run sbx login in a terminal.",
+  "sandbox.unknownError": "unknown error",
+  "sandbox.checkAgain": "Check again",
+  "sandbox.noHosts": "No hosts contacted yet from this repository's sandboxes.",
+  "sandbox.countSummary":
+    "{total} created by pi-gui, {running} running. Each thread keeps its own until it is removed; removing unused ones frees disk space, and a thread that needs one again gets a fresh sandbox.",
+  "sandbox.removeConfirm":
+    "Remove {count} sandboxes no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.",
+  "sandbox.removeConfirm_one":
+    "Remove {count} sandbox no open thread uses? Packages installed in it are lost; files in your checkouts are not touched.",
+  "sandbox.removeConfirm_other":
+    "Remove {count} sandboxes no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.",
+  "sandbox.removeUnused": "Remove {count} unused",
+  "sandbox.hostFor": "Host for {repository}",
+  "sandbox.allowedCount": "{count} allowed",
+  "sandbox.blockedCount": "{count} blocked",
+  "sandbox.lastSeen": "last {time}",
+  "sandbox.missing": "Not installed; sandboxed tools fail until it is. Install it: {installHint}.",
+  "sandbox.unavailable": "Not answering: {message}",
+  "sandbox.openThreads": "{count} open threads",
+  "sandbox.openThreads_one": "{count} open thread",
+  "sandbox.openThreads_other": "{count} open threads",
+  "sandbox.runningCount": "{count} running",
+  "sandbox.failedCount": "{count} failed: {message}",
+  "sandbox.sessionSummary":
+    "{summary}. Idle sandboxes stop after 10 minutes and start again on the next tool call.",
   "models.enabledCount": "{enabled} of {total}",
   "models.count": "{count} models",
   "models.count_one": "{count} model",

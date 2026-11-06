@@ -9,6 +9,7 @@ import {
   type SandboxSettingsUpdate,
   type SandboxSnapshot,
 } from "../../../contracts/sandbox";
+import { useTranslation, type Translate } from "../../i18n";
 import { SettingsSwitch } from "./settings-controls";
 import { SettingsGroup, SettingsRow } from "./settings-utils";
 
@@ -16,6 +17,7 @@ import { SettingsGroup, SettingsRow } from "./settings-utils";
 const REFRESH_MS = 2_000;
 
 export function SettingsSandboxSection() {
+  const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<SandboxSnapshot | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [pending, setPending] = useState(false);
@@ -65,36 +67,31 @@ export function SettingsSandboxSection() {
     return error ? (
       <p className="settings-warning">{error}</p>
     ) : (
-      <p className="settings-row__description">Checking Docker Sandboxes…</p>
+      <p className="settings-row__description">{t("sandbox.checking")}</p>
     );
   }
   return (
     <>
-      <SettingsGroup
-        title="Tool sandbox"
-        description="pi's read, write, edit and bash tools run in each thread's own Docker sandbox (a Linux microVM) that can only see the thread's checkout. Models, MCP servers and extensions keep running on this Mac."
-      >
+      <SettingsGroup title={t("sandbox.title")} description={t("sandbox.description")}>
         {error ? (
           <div className="settings-row">
             <span className="settings-row__description settings-warning">{error}</span>
           </div>
         ) : null}
         <SettingsRow
-          title="Run tools in a sandbox"
+          title={t("sandbox.enabled")}
           description={
-            snapshot.supported
-              ? "Applies to threads opened from now on. Reopen the app to switch threads that are already open."
-              : "Not available on this platform."
+            snapshot.supported ? t("sandbox.appliesToNewThreads") : t("sandbox.unsupported")
           }
         >
           <SettingsSwitch
             checked={snapshot.enabled}
             disabled={pending || !snapshot.supported}
-            label="Run tools in a sandbox"
+            label={t("sandbox.enabled")}
             onChange={(enabled) => update({ kind: "enabled", enabled })}
           />
         </SettingsRow>
-        <SettingsRow title="Docker Sandboxes" description={backendDescription(snapshot)}>
+        <SettingsRow title={t("sandbox.backend")} description={backendDescription(snapshot, t)}>
           {snapshot.backend.state === "ready" ? null : (
             <button
               className="button button--secondary"
@@ -105,14 +102,17 @@ export function SettingsSandboxSection() {
                 if (api) run(() => api.prepareSandbox());
               }}
             >
-              Check again
+              {t("sandbox.checkAgain")}
             </button>
           )}
         </SettingsRow>
-        <SettingsRow title="Threads" description={sessionSummary(snapshot)} />
+        <SettingsRow title={t("sandbox.threads")} description={sessionSummary(snapshot, t)} />
         <SettingsRow
-          title="Sandboxes"
-          description={`${snapshot.sandboxes.total} created by pi-gui, ${snapshot.sandboxes.running} running. Each thread keeps its own until it is removed; removing unused ones frees disk space, and a thread that needs one again gets a fresh sandbox.`}
+          title={t("sandbox.sandboxes")}
+          description={t("sandbox.countSummary", {
+            total: snapshot.sandboxes.total,
+            running: snapshot.sandboxes.running,
+          })}
         >
           <button
             className="button button--secondary"
@@ -120,23 +120,21 @@ export function SettingsSandboxSection() {
             type="button"
             onClick={() => {
               if (
-                window.confirm(
-                  `Remove ${snapshot.sandboxes.unused} ${snapshot.sandboxes.unused === 1 ? "sandbox" : "sandboxes"} no open thread uses? Packages installed in them are lost; files in your checkouts are not touched.`,
-                )
+                window.confirm(t("sandbox.removeConfirm", { count: snapshot.sandboxes.unused }))
               ) {
                 update({ kind: "remove-unused-sandboxes" });
               }
             }}
           >
-            Remove {snapshot.sandboxes.unused} unused
+            {t("sandbox.removeUnused", { count: snapshot.sandboxes.unused })}
           </button>
         </SettingsRow>
       </SettingsGroup>
 
       <SettingsGroup
         plain
-        title="Network"
-        description="Sandboxes can reach any host you have not blocked; services on this Mac (host.docker.internal, localhost) stay blocked unless you allow them. Every host a sandbox contacts is recorded below, by repository. Blocking takes effect on the next request; nothing needs restarting."
+        title={t("sandbox.network")}
+        description={t("sandbox.networkDescription")}
       >
         {null}
       </SettingsGroup>
@@ -157,6 +155,7 @@ function SandboxRepoGroup({
   readonly disabled: boolean;
   readonly onUpdate: (update: SandboxSettingsUpdate) => void;
 }) {
+  const { t } = useTranslation();
   const [draftHost, setDraftHost] = useState("");
   const draft = normalizeSandboxHost(draftHost);
   const setRule = (host: string, rule: SandboxHostRule | null) =>
@@ -171,9 +170,9 @@ function SandboxRepoGroup({
       <SettingsGroup title={baseName(repo.repoPath)} description={repo.repoPath}>
         <div className="settings-row">
           <input
-            aria-label={`Host for ${baseName(repo.repoPath)}`}
+            aria-label={t("sandbox.hostFor", { repository: baseName(repo.repoPath) })}
             className="settings-text-input"
-            placeholder="e.g. *.example.com"
+            placeholder={t("sandbox.hostPlaceholder")}
             value={draftHost}
             onChange={(event) => setDraftHost(event.currentTarget.value)}
           />
@@ -188,15 +187,13 @@ function SandboxRepoGroup({
                 setDraftHost("");
               }}
             >
-              Block
+              {t("sandbox.block")}
             </button>
           </div>
         </div>
         {repo.hosts.length === 0 ? (
           <div className="settings-row">
-            <span className="settings-row__description">
-              No hosts contacted yet from this repository&apos;s sandboxes.
-            </span>
+            <span className="settings-row__description">{t("sandbox.noHosts")}</span>
           </div>
         ) : null}
         {repo.hosts.map((entry) => (
@@ -236,32 +233,33 @@ function SandboxHostRow({
   readonly disabled: boolean;
   readonly onRule: (rule: SandboxHostRule | null) => void;
 }) {
+  const { t, locale } = useTranslation();
   const hostOnly = isSandboxHostOnlyName(host);
   const ruleText =
     rule === "allow"
-      ? "Allowed by you"
+      ? t("sandbox.allowedByYou")
       : rule === "block"
-        ? "Blocked by you"
+        ? t("sandbox.blockedByYou")
         : hostOnly
-          ? "A service on this Mac, blocked unless you allow it"
+          ? t("sandbox.hostService")
           : "";
   const traffic = entry
     ? [
-        entry.allowedCount > 0 ? `${entry.allowedCount} allowed` : "",
-        entry.blockedCount > 0 ? `${entry.blockedCount} blocked` : "",
-        `last ${new Date(entry.lastSeenAt).toLocaleString()}`,
+        entry.allowedCount > 0 ? t("sandbox.allowedCount", { count: entry.allowedCount }) : "",
+        entry.blockedCount > 0 ? t("sandbox.blockedCount", { count: entry.blockedCount }) : "",
+        t("sandbox.lastSeen", { time: new Date(entry.lastSeenAt).toLocaleString(locale) }),
       ]
         .filter(Boolean)
         .join(" · ")
-    : "Not contacted yet";
+    : t("sandbox.notContacted");
   // Services on this Mac are denied unless allowed; every other host is allowed unless blocked.
   const action: { readonly label: string; readonly rule: SandboxHostRule | null } = hostOnly
     ? rule === "allow"
-      ? { label: "Block", rule: null }
-      : { label: "Allow", rule: "allow" }
+      ? { label: t("sandbox.block"), rule: null }
+      : { label: t("sandbox.allow"), rule: "allow" }
     : rule === "block"
-      ? { label: "Unblock", rule: null }
-      : { label: "Block", rule: "block" };
+      ? { label: t("sandbox.unblock"), rule: null }
+      : { label: t("sandbox.block"), rule: "block" };
   return (
     <div className="settings-row" data-testid="sandbox-host" data-host={host}>
       <div className="settings-row__label">
@@ -292,30 +290,37 @@ function hostRule(repo: SandboxRepoNetworkRecord, host: string): SandboxHostRule
   return undefined;
 }
 
-function backendDescription(snapshot: SandboxSnapshot): string {
+function backendDescription(snapshot: SandboxSnapshot, t: Translate): string {
   switch (snapshot.backend.state) {
     case "ready":
-      return "Ready. Each thread gets its own sandbox on its first tool call.";
+      return t("sandbox.ready");
     case "missing":
-      return `Not installed; sandboxed tools fail until it is. Install it: ${snapshot.backend.installHint}.`;
+      return t("sandbox.missing", { installHint: snapshot.backend.installHint });
     case "signed-out":
-      return "Installed but not signed in; sandboxed tools fail until it is. Run sbx login in a terminal.";
+      return t("sandbox.signedOut");
     case "unavailable":
-      return `Not answering: ${snapshot.backend.message ?? "unknown error"}`;
+      return t("sandbox.unavailable", {
+        message: snapshot.backend.message ?? t("sandbox.unknownError"),
+      });
   }
 }
 
-function sessionSummary(snapshot: SandboxSnapshot): string {
+function sessionSummary(snapshot: SandboxSnapshot, t: Translate): string {
   const running = snapshot.sessions.filter((session) => session.state === "ready").length;
   const failed = snapshot.sessions.filter((session) => session.state === "failed");
   const parts = [
-    `${snapshot.sessions.length} open ${snapshot.sessions.length === 1 ? "thread" : "threads"}`,
-    `${running} running`,
+    t("sandbox.openThreads", { count: snapshot.sessions.length }),
+    t("sandbox.runningCount", { count: running }),
     ...(failed.length > 0
-      ? [`${failed.length} failed: ${(failed[0]?.message ?? "").replace(/\.\s*$/, "")}`]
+      ? [
+          t("sandbox.failedCount", {
+            count: failed.length,
+            message: (failed[0]?.message ?? "").replace(/\.\s*$/, ""),
+          }),
+        ]
       : []),
   ];
-  return `${parts.join(" · ")}. Idle sandboxes stop after 10 minutes and start again on the next tool call.`;
+  return t("sandbox.sessionSummary", { summary: parts.join(" · ") });
 }
 
 function baseName(repoPath: string): string {
