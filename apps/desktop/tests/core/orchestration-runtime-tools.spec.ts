@@ -1,5 +1,3 @@
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -13,46 +11,7 @@ import {
   runOrchestrationRuntimeTool,
   seedAgentDir,
 } from "../helpers/electron-app";
-
-async function startHangingOpenAiServer(): Promise<{
-  readonly baseUrl: string;
-  readonly pendingRequestCount: () => number;
-  readonly close: () => Promise<void>;
-}> {
-  const pending = new Set<import("node:http").ServerResponse>();
-  const sockets = new Set<import("node:net").Socket>();
-  const server = createServer((request, response) => {
-    pending.add(response);
-    response.on("close", () => pending.delete(response));
-    request.resume();
-    // Intentionally leave the response pending: create_child_thread must return
-    // after the running acknowledgement rather than await this model turn.
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-  const address = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    pendingRequestCount: () => pending.size,
-    close: async () => {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
-    },
-  };
-}
+import { startHangingOpenAiServer } from "../helpers/hanging-openai-server";
 
 async function selectedSessionRef(
   window: Parameters<typeof getDesktopState>[0],
@@ -70,6 +29,8 @@ test("create_child_thread returns after a slow worker starts, before its turn co
   if (proofDir) {
     await mkdir(proofDir, { recursive: true });
   }
+  // create_child_thread must return after the running acknowledgement rather than
+  // await a model turn this server never answers.
   const server = await startHangingOpenAiServer();
   const userDataDir = await makeUserDataDir();
   const agentDir = join(userDataDir, "agent");
@@ -119,6 +80,22 @@ test("create_child_thread returns after a slow worker starts, before its turn co
     const window = await harness.firstWindow();
     await createNamedThread(window, "Parent orchestration thread");
     const parentRef = await selectedSessionRef(window);
+    // Record what state pushes carry: child links, and never child transcripts.
+    await window.evaluate(() => {
+      const record = globalThis as typeof globalThis & {
+        pushes?: { transcriptRows: number; linkedChildIds: string[] }[];
+      };
+      record.pushes = [];
+      globalThis.window.piApp?.onStateChanged((state) => {
+        record.pushes?.push({
+          transcriptRows: state.orchestrationChildren.reduce(
+            (rows, child) => rows + child.transcript.length + (child.latestTranscript ? 1 : 0),
+            0,
+          ),
+          linkedChildIds: state.childThreadLinks.map((link) => link.childSessionId),
+        });
+      });
+    });
     const prompt = "Keep this delegated worker running slowly.";
     // The server never answers, so the child's first turn cannot complete. A tool
     // that awaited the turn would never return, and the test timeout names this step.
@@ -137,10 +114,72 @@ test("create_child_thread returns after a slow worker starts, before its turn co
       (entry) => entry.sourceToolCallId === "create-child-start-ack",
     );
     expect(child?.status).toBe("running");
+    expect(child?.transcript.length).toBeGreaterThan(0);
     const childRunningIndicator = window.locator(
       `.session-row[data-session-id="${child?.childSessionId}"] .session-row__status--running`,
     );
     await expect(childRunningIndicator).toBeVisible();
+    const archivedWhileRunning = await runOrchestrationRuntimeTool(harness, {
+      toolName: "archive_child_threads",
+      sessionRef: parentRef,
+      params: { thread_ids: [child!.id] },
+    });
+    expect(archivedWhileRunning.details?.archived).toEqual([]);
+    expect(archivedWhileRunning.details?.skipped).toEqual([
+      {
+        threadId: child!.id,
+        reason: "Child thread is running or has queued messages; it was not archived.",
+      },
+    ]);
+    const queued = await runOrchestrationRuntimeTool(harness, {
+      toolName: "send_message_to_thread",
+      sessionRef: parentRef,
+      params: { thread_id: child!.id, message: "Finish the current work, then verify it." },
+    });
+    expect(queued.details?.queuedMessageCount).toBeGreaterThan(0);
+    const skippedQueue = await runOrchestrationRuntimeTool(harness, {
+      toolName: "archive_child_threads",
+      sessionRef: parentRef,
+      params: { thread_ids: [child!.id] },
+    });
+    expect(skippedQueue.details?.archived).toEqual([]);
+    expect(skippedQueue.details?.skipped).toHaveLength(1);
+    expect(server.pendingRequestCount()).toBeGreaterThan(0);
+    const afterArchiveAttempt = await getDesktopState(window);
+    expect(
+      afterArchiveAttempt.workspaces
+        .flatMap((ws) => ws.sessions)
+        .find((session) => session.id === child?.childSessionId)?.archivedAt,
+    ).toBeUndefined();
+    // getState() returns the full child; pushes carry only its link, never its transcript.
+    const pushes = () =>
+      window.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              pushes?: { transcriptRows: number; linkedChildIds: string[] }[];
+            }
+          ).pushes ?? [],
+      );
+    const nestedChildRow = window.locator(
+      `.session-tree__children[data-parent-session-id="${parentRef.sessionId}"] .session-row[data-session-id="${child?.childSessionId}"]`,
+    );
+    await expect(nestedChildRow).toBeVisible();
+    const pushesBefore = (await pushes()).length;
+    // Pin and unpin the parent: each sends a push. The tree must survive them.
+    const parentRow = window
+      .locator(`.session-row[data-session-id="${parentRef.sessionId}"]`)
+      .first();
+    await parentRow.hover();
+    await parentRow.getByRole("button", { name: /^Pin / }).click();
+    await expect(nestedChildRow).toBeVisible();
+    await parentRow.hover();
+    await parentRow.getByRole("button", { name: /^Unpin / }).click();
+    await expect.poll(async () => (await pushes()).length).toBeGreaterThan(pushesBefore + 1);
+    await expect(nestedChildRow).toBeVisible();
+    const pushed = await pushes();
+    expect(pushed.every((push) => push.transcriptRows === 0)).toBe(true);
+    expect(pushed.at(-1)?.linkedChildIds).toContain(child?.childSessionId);
     if (proofDir) {
       await window.screenshot({
         path: join(proofDir, "orchestration-child-running.png"),

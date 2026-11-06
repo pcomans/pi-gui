@@ -40,6 +40,7 @@ import type {
 } from "@pi-gui/session-driver/runtime-types";
 import {
   type AppView,
+  childThreadLinksOf,
   type ComposerAttachment,
   type ComposerDraftSyncSource,
   type ExtensionCommandCompatibilityRecord,
@@ -51,12 +52,14 @@ import {
   type DesktopAppViewState,
   type ForkThreadInput,
   type NotificationPreferences,
+  type OrchestrationChildThread,
   type QueuedComposerMessage,
   type RemoveWorktreeInput,
   type SendChildThreadFollowUpInput,
   type SetChildSupervisionLoopInput,
   type SelectedTranscriptRecord,
   type SessionExtensionNoticeRecord,
+  type SessionExtensionUiUpdate,
   type StartThreadInput,
   type StartupDiagnostic,
   type ThemeMode,
@@ -109,6 +112,8 @@ import {
   previewFromTranscript,
   toSessionQueuedMessages,
   toSessionRef,
+  transcriptForWindow,
+  transcriptImageResponse,
 } from "./app-store-utils";
 import type {
   CustomProviderConfig,
@@ -202,6 +207,7 @@ export class DesktopAppStore {
   /** Serialize full-state refreshes so stale async builders cannot publish over newer state. */
   private refreshStateQueue: Promise<void> = Promise.resolve();
   private readonly selectedTranscriptListeners = new Set<SelectedTranscriptListener>();
+  private readonly extensionUiListeners = new Set<(update: SessionExtensionUiUpdate) => void>();
   private readonly sessionEventListeners = new Set<SessionEventListener>();
   private readonly sessionEventQueues = new Map<string, Promise<void>>();
   /**
@@ -215,9 +221,16 @@ export class DesktopAppStore {
    * Coalesce token-level assistantDelta / redundant sessionUpdated publishes so
    * the renderer does not apply a full DesktopAppState snapshot per token.
    */
-  private readonly streamingUiPublisher = new StreamingUiPublisher((sessionRef) => {
+  private readonly streamingUiPublisher = new StreamingUiPublisher((sessionRefs) => {
+    try {
+      this.refreshOrchestrationForSessions(sessionRefs);
+    } catch (error) {
+      console.error("[app-store] failed to refresh orchestration children", error);
+    }
     this.emit();
-    this.publishSelectedTranscriptFor(sessionRef);
+    if (sessionRefs.some((sessionRef) => this.isSelectedSession(sessionRef))) {
+      this.publishSelectedTranscript();
+    }
   });
   /** Per-workspace serial queue so focus reconciles never overlap or race. */
   private readonly externalChangeQueues = new Map<string, Promise<void>>();
@@ -441,6 +454,7 @@ export class DesktopAppStore {
         this.sessionState.loadedTranscriptKeys.add(key);
         this.updateSessionConfig(snapshot.ref, snapshot.config);
         this.updateSessionUsage(snapshot.ref, snapshot.usage);
+        this.updateLastRunOutcome(snapshot);
       },
       unpinSession: (sessionRef) => {
         const key = sessionKey(sessionRef);
@@ -485,8 +499,13 @@ export class DesktopAppStore {
         workspaces: structuredClone(this.state.workspaces),
         orchestrationChildren: structuredClone(this.state.orchestrationChildren),
       }),
+      lastRunOutcome: (ref) => this.sessionState.lastRunOutcomeBySession.get(sessionKey(ref)),
+      archiveIdleSession: async (ref, expect) => {
+        await this.workspaceOwner.archiveIdleSession(ref, expect);
+      },
+      orchestrationChildren: () => this.state.orchestrationChildren,
       replaceOrchestrationChildren: (children) => {
-        this.state = { ...this.state, orchestrationChildren: [...children] };
+        this.state = { ...this.state, ...this.orchestrationChildrenState([...children]) };
       },
       refreshState: (refreshOptions) => this.refreshState(refreshOptions),
       emit: () => this.emit(),
@@ -506,6 +525,7 @@ export class DesktopAppStore {
         this.sessionState.loadedTranscriptKeys.add(key);
         this.updateSessionConfig(snapshot.ref, snapshot.config);
         this.updateSessionUsage(snapshot.ref, snapshot.usage);
+        this.updateLastRunOutcome(snapshot);
       },
       transcriptFor: (sessionRef) =>
         this.sessionState.transcriptCache.get(sessionKey(sessionRef)) ?? [],
@@ -527,6 +547,8 @@ export class DesktopAppStore {
           attachments,
           submitOptions,
         ),
+      deliverBackgroundInstruction: (sessionRef, text, options) =>
+        this.conversationOwner.deliverBackgroundInstruction(sessionRef, text, options),
     });
 
     this.scheduledTaskOwner = createScheduledTaskOwner({
@@ -615,6 +637,16 @@ export class DesktopAppStore {
       throw new Error("Workbench task does not exist in this workspace.");
   }
 
+  /** The only way to set children: it keeps the window's slim links in step with them. */
+  private orchestrationChildrenState(
+    children: readonly OrchestrationChildThread[],
+  ): Pick<DesktopAppState, "orchestrationChildren" | "childThreadLinks"> {
+    return {
+      orchestrationChildren: children,
+      childThreadLinks: childThreadLinksOf(children, this.state.childThreadLinks),
+    };
+  }
+
   snapshot(): DesktopAppState {
     return structuredClone(this.state);
   }
@@ -629,6 +661,11 @@ export class DesktopAppStore {
     return workspace?.sessions.some((session) => session.id === sessionId)
       ? { workspaceId: workspace.id, sessionId }
       : undefined;
+  }
+
+  /** Serves a tool-output image the window shows, by the URL its transcript row carries. */
+  transcriptImageResponse(requestUrl: string): Response {
+    return transcriptImageResponse(requestUrl, (key) => this.sessionState.transcriptCache.get(key));
   }
 
   async getStateForView(view: DesktopAppViewState): Promise<DesktopAppState> {
@@ -851,6 +888,13 @@ export class DesktopAppStore {
       .catch(() => undefined);
     return () => {
       this.selectedTranscriptListeners.delete(listener);
+    };
+  }
+
+  subscribeToExtensionUi(listener: (update: SessionExtensionUiUpdate) => void): () => void {
+    this.extensionUiListeners.add(listener);
+    return () => {
+      this.extensionUiListeners.delete(listener);
     };
   }
 
@@ -1228,8 +1272,13 @@ export class DesktopAppStore {
     return this.orchestrationOwner.createChildThreadToolResult(parentRef, input);
   }
 
-  listThreadsToolResult(parentRef: SessionRef) {
-    return this.orchestrationOwner.listThreadsToolResult(parentRef);
+  listThreadsToolResult(parentRef: SessionRef, workspace?: string) {
+    return this.orchestrationOwner.listThreadsToolResult(parentRef, workspace);
+  }
+
+  async archiveChildThreadsToolResult(parentRef: SessionRef, threadIds: readonly string[]) {
+    await this.initialize();
+    return this.orchestrationOwner.archiveChildThreadsToolResult(parentRef, threadIds);
   }
 
   async readThreadToolResult(parentRef: SessionRef, threadId: string) {
@@ -2233,7 +2282,7 @@ export class DesktopAppStore {
       threadGrouping: persisted.threadGrouping ?? "time",
       collapsedWorkspaceIds: persisted.collapsedWorkspaceIds ?? [],
       enableTransparency: persisted.enableTransparency ?? this.state.enableTransparency,
-      orchestrationChildren: persisted.orchestrationChildren ?? [],
+      ...this.orchestrationChildrenState(persisted.orchestrationChildren ?? []),
     };
 
     this.sessionState.lastViewedAtBySession.clear();
@@ -2482,9 +2531,10 @@ export class DesktopAppStore {
               globalModelSettings,
             )
           : undefined;
-      const runtimeByWorkspace = this.serializeEffectiveRuntimeState(
+      const runtimeByWorkspace = await this.serializeEffectiveRuntimeState(
         workspaces,
         scopedModelSettingsByWorkspace,
+        globalModelSettings,
       );
       const pinnedSessionOrder = reconcilePinnedSessionOrder(
         this.sessionState.pinnedAtBySession,
@@ -2529,7 +2579,6 @@ export class DesktopAppStore {
         ),
         extensionFlagsByWorkspace: mapToRecord(this.extensionFlagsByWorkspace),
         extensionFlagsBySession: mapToRecord(this.sessionState.extensionFlagsBySession),
-        orchestrationChildren: this.state.orchestrationChildren,
         lastViewedAtBySession: mapToRecord(this.sessionState.lastViewedAtBySession),
         lastInteractedAtBySession: mapToRecord(this.sessionState.lastInteractedAtBySession),
         pinnedAtBySession: mapToRecord(this.sessionState.pinnedAtBySession),
@@ -2569,7 +2618,7 @@ export class DesktopAppStore {
       await this.orchestrationOwner.hydrateOrchestrationChildren();
       this.state = {
         ...this.state,
-        orchestrationChildren: this.orchestrationOwner.projectOrchestrationChildren(),
+        ...this.orchestrationChildrenState(this.orchestrationOwner.projectOrchestrationChildren()),
       };
       this.scheduleOrchestrationSupervision();
 
@@ -2645,6 +2694,7 @@ export class DesktopAppStore {
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
       snapshot = await this.driver.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
+      this.updateLastRunOutcome(snapshot);
     }
     await this.ensureSessionSubscribed(sessionRef);
     await this.refreshSessionCommands(sessionRef);
@@ -2655,6 +2705,7 @@ export class DesktopAppStore {
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
       const snapshot = await this.driver.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
+      this.updateLastRunOutcome(snapshot);
       this.updateQueuedComposerMessages(sessionRef, snapshot.queuedMessages);
     }
     await this.ensureSessionSubscribed(sessionRef);
@@ -3394,10 +3445,14 @@ export class DesktopAppStore {
     if (subscriptionKey !== key) {
       this.migrateSessionSubscriptionKey(subscriptionKey, key);
     }
+    if (subscriptionKey === key && (await this.applyExtensionUiOnlyEvent(event))) {
+      return;
+    }
     // Apply-then-publish is wrapped so the finally always either emits or
     // schedules a coalesced emit. Token-level assistantDelta / redundant
     // sessionUpdated ticks must not publish a full app snapshot per token.
     // First running tick for a new runningRunId still emits immediately.
+    const deferPublish = this.streamingUiPublisher.shouldDefer(event);
     try {
       const knownSession = this.sessionFromState(event.sessionRef);
       const shouldFollowSessionMutation =
@@ -3447,12 +3502,14 @@ export class DesktopAppStore {
         case "runCompleted":
           this.updateSessionConfig(event.sessionRef, event.snapshot.config);
           this.updateSessionUsage(event.sessionRef, event.snapshot.usage);
+          this.updateLastRunOutcome(event.snapshot);
           this.updateQueuedComposerMessages(event.sessionRef, event.snapshot.queuedMessages);
           await this.refreshSessionCommands(event.sessionRef);
           break;
         case "sessionUpdated":
           this.updateSessionConfig(event.sessionRef, event.snapshot.config);
           this.updateSessionUsage(event.sessionRef, event.snapshot.usage);
+          this.updateLastRunOutcome(event.snapshot);
           this.updateQueuedComposerMessages(event.sessionRef, event.snapshot.queuedMessages);
           if (event.snapshot.status !== "running") {
             this.refreshSessionCommandsCoalesced(event.sessionRef);
@@ -3506,7 +3563,6 @@ export class DesktopAppStore {
         runningSinceBySession: this.sessionState.runningSinceBySession,
         activeAssistantMessageBySession: this.sessionState.activeAssistantMessageBySession,
         pendingAssistantMessageBySession: this.sessionState.pendingAssistantMessageBySession,
-        activeWorkingActivityBySession: this.sessionState.activeWorkingActivityBySession,
         extensionToolLabels: (ref) =>
           extensionToolLabels(this.runtimeByWorkspace.get(ref.workspaceId)),
       });
@@ -3522,17 +3578,10 @@ export class DesktopAppStore {
       }
       this.markSessionViewedIfActivelyViewed(event.sessionRef);
       this.state = this.syncDerivedSessionState(this.state, event.sessionRef);
-      if (
-        this.orchestrationOwner.hasOrchestrationChildSession(event.sessionRef) ||
-        this.orchestrationOwner.hasOrchestrationParentSession(event.sessionRef)
-      ) {
-        this.state = {
-          ...this.state,
-          orchestrationChildren: this.orchestrationOwner.projectOrchestrationChildrenForSession(
-            event.sessionRef,
-          ),
-        };
-        this.scheduleOrchestrationSupervision();
+      // Defer derived orchestration work as well as IPC. Otherwise token events
+      // still rescan parent evidence before the publisher coalesces them.
+      if (!deferPublish) {
+        this.refreshOrchestrationForSessions([event.sessionRef]);
       }
       if (shouldFollowSessionMutation && event.type !== "sessionClosed") {
         this.applyFastSessionSelection(event.sessionRef);
@@ -3552,7 +3601,7 @@ export class DesktopAppStore {
     } catch (error) {
       console.error(`[app-store] failed to apply session event ${event.type} for ${key}`, error);
     } finally {
-      if (this.streamingUiPublisher.shouldDefer(event)) {
+      if (deferPublish) {
         this.streamingUiPublisher.schedule(event.sessionRef);
         await this.emitSessionEvent(event, this.state);
       } else {
@@ -3563,6 +3612,24 @@ export class DesktopAppStore {
       }
       this.streamingUiPublisher.observe(event);
     }
+  }
+
+  private refreshOrchestrationForSessions(sessionRefs: readonly SessionRef[]): void {
+    const members = sessionRefs.filter(
+      (sessionRef) =>
+        this.orchestrationOwner.hasOrchestrationChildSession(sessionRef) ||
+        this.orchestrationOwner.hasOrchestrationParentSession(sessionRef),
+    );
+    if (members.length === 0) {
+      return;
+    }
+    this.state = {
+      ...this.state,
+      ...this.orchestrationChildrenState(
+        this.orchestrationOwner.projectOrchestrationChildrenForSessions(members),
+      ),
+    };
+    this.scheduleOrchestrationSupervision();
   }
 
   workspaceRefFromState(workspaceId: string): WorkspaceRef | undefined {
@@ -3660,24 +3727,22 @@ export class DesktopAppStore {
   private async serializeRuntimeStateForCurrentWorkspaces(): Promise<
     Record<string, RuntimeSnapshot>
   > {
-    const runtimeByWorkspace = this.serializeRuntimeState();
-    if (this.state.modelSettingsScopeMode !== "per-repo") {
-      return runtimeByWorkspace;
-    }
-
-    const workspaceRefs = this.state.workspaces.map((workspace) => ({
-      workspaceId: workspace.id,
-      path: workspace.path,
-      displayName: workspace.name,
-    }));
-    const scopedModelSettingsByWorkspace = await this.loadScopedModelSettingsByWorkspace(
-      this.state.workspaces,
-      workspaceRefs,
-      this.state.globalModelSettings,
-    );
+    const scopedModelSettingsByWorkspace =
+      this.state.modelSettingsScopeMode === "per-repo"
+        ? await this.loadScopedModelSettingsByWorkspace(
+            this.state.workspaces,
+            this.state.workspaces.map((workspace) => ({
+              workspaceId: workspace.id,
+              path: workspace.path,
+              displayName: workspace.name,
+            })),
+            this.state.globalModelSettings,
+          )
+        : undefined;
     return this.serializeEffectiveRuntimeState(
       this.state.workspaces,
       scopedModelSettingsByWorkspace,
+      this.state.globalModelSettings,
     );
   }
 
@@ -3719,31 +3784,104 @@ export class DesktopAppStore {
     );
   }
 
-  private serializeEffectiveRuntimeState(
+  /**
+   * Runtime snapshots as windows see them: per-repo mode shows a worktree its repo's model
+   * settings, and app-global mode shows every workspace the global ones. Each model's scope is
+   * re-resolved by pi against the patterns shown when they differ from the workspace's own.
+   */
+  private async serializeEffectiveRuntimeState(
     workspaces: DesktopAppState["workspaces"],
-    scopedModelSettingsByWorkspace?: Record<string, ModelSettingsSnapshot>,
-  ): Record<string, RuntimeSnapshot> {
-    const runtimeByWorkspace = this.serializeRuntimeState();
-    if (this.state.modelSettingsScopeMode !== "per-repo") {
-      return runtimeByWorkspace;
-    }
+    scopedModelSettingsByWorkspace: Record<string, ModelSettingsSnapshot> | undefined,
+    globalModelSettings: ModelSettingsSnapshot,
+  ): Promise<Record<string, RuntimeSnapshot>> {
+    const shownModelSettings = (workspaceId: string): ModelSettingsSnapshot | undefined => {
+      if (this.state.modelSettingsScopeMode !== "per-repo") {
+        return globalModelSettings;
+      }
+      const ownerWorkspaceId = resolveRepoWorkspaceId(workspaces, workspaceId);
+      return ownerWorkspaceId ? scopedModelSettingsByWorkspace?.[ownerWorkspaceId] : undefined;
+    };
 
+    const rescoped = new Map<RuntimeSnapshot, RuntimeSnapshot["models"]>();
+    await Promise.all(
+      workspaces.map(async (workspace) => {
+        const runtime = this.runtimeByWorkspace.get(workspace.id);
+        const patterns = shownModelSettings(workspace.id)?.enabledModelPatterns;
+        if (
+          !runtime ||
+          !patterns ||
+          samePatterns(runtime.settings.enabledModelPatterns, patterns)
+        ) {
+          return;
+        }
+        try {
+          const models = await this.driver.runtimeSupervisor.scopeModels(
+            runtime.workspace,
+            runtime.models,
+            patterns,
+          );
+          rescoped.set(runtime, models);
+        } catch (error) {
+          console.warn(
+            `[pi-gui] Failed to resolve enabled models for ${workspace.path}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }),
+    );
+
+    // Serialize after the awaits so a runtime replaced meanwhile is not swapped for an older one.
+    // A replaced runtime keeps its own scopes until the next refresh rescopes it.
+    const runtimeByWorkspace = this.serializeRuntimeState();
     for (const workspace of workspaces) {
-      const ownerWorkspaceId = resolveRepoWorkspaceId(workspaces, workspace.id);
-      const workspaceRuntime = runtimeByWorkspace[workspace.id];
-      const modelSettings = ownerWorkspaceId
-        ? scopedModelSettingsByWorkspace?.[ownerWorkspaceId]
-        : undefined;
-      if (!workspaceRuntime || !modelSettings) {
+      const runtime = runtimeByWorkspace[workspace.id];
+      const modelSettings = shownModelSettings(workspace.id);
+      if (!runtime || !modelSettings) {
         continue;
       }
+      const models = rescoped.get(runtime);
       runtimeByWorkspace[workspace.id] = applyModelSettingsSnapshot(
-        workspaceRuntime,
+        models ? { ...runtime, models } : runtime,
         modelSettings,
       );
     }
 
     return runtimeByWorkspace;
+  }
+
+  /**
+   * Status, widget and title changes only touch one session's extension UI, and extensions can
+   * send them many times a second (a spinner in the title, for one). Send that session's UI on
+   * its own instead of the whole app state. Anything else returns false and takes the full path.
+   */
+  private async applyExtensionUiOnlyEvent(event: SessionDriverEvent): Promise<boolean> {
+    if (
+      event.type !== "hostUiRequest" ||
+      (event.request.kind !== "status" &&
+        event.request.kind !== "widget" &&
+        event.request.kind !== "title") ||
+      !this.sessionFromState(event.sessionRef)
+    ) {
+      return false;
+    }
+    const key = sessionKey(event.sessionRef);
+    const uiState = this.getOrCreateExtensionUiState(event.sessionRef);
+    applyHostUiRequestToExtensionUiState(uiState, event.request);
+    const ui = serializeExtensionUiState(uiState);
+    // Same counter as emit(), so the renderer orders this against full state pushes.
+    this.publishRevision = Math.max(this.publishRevision, this.state.revision) + 1;
+    this.state = {
+      ...this.state,
+      revision: this.publishRevision,
+      sessionExtensionUiBySession: { ...this.state.sessionExtensionUiBySession, [key]: ui },
+    };
+    const update = { sessionKey: key, ui, revision: this.publishRevision };
+    for (const listener of this.extensionUiListeners) {
+      listener(update);
+    }
+    await this.emitSessionEvent(event, this.state);
+    return true;
   }
 
   private serializeSessionExtensionUiState() {
@@ -4074,7 +4212,11 @@ export class DesktopAppStore {
     return {
       workspaceId: sessionRef.workspaceId,
       sessionId: sessionRef.sessionId,
-      transcript: this.sessionState.transcriptCache.get(sessionKey(sessionRef)) ?? [],
+      // Image data stays here; the window loads each image when its row is shown.
+      transcript: transcriptForWindow(
+        sessionRef,
+        this.sessionState.transcriptCache.get(sessionKey(sessionRef)) ?? [],
+      ),
       ...(schemaInfo ? { schemaInfo } : {}),
     };
   }
@@ -4593,6 +4735,15 @@ export class DesktopAppStore {
     }
   }
 
+  private updateLastRunOutcome(snapshot: SessionSnapshot): void {
+    const key = sessionKey(snapshot.ref);
+    if (snapshot.lastRunOutcome) {
+      this.sessionState.lastRunOutcomeBySession.set(key, snapshot.lastRunOutcome);
+    } else {
+      this.sessionState.lastRunOutcomeBySession.delete(key);
+    }
+  }
+
   private updateSessionUsage(
     sessionRef: SessionRef,
     usage: SessionUsageSnapshot | undefined,
@@ -4888,11 +5039,12 @@ function modelSettingsEqual(left: ModelSettingsSnapshot, right: ModelSettingsSna
     left.defaultProvider === right.defaultProvider &&
     left.defaultModelId === right.defaultModelId &&
     left.defaultThinkingLevel === right.defaultThinkingLevel &&
-    left.enabledModelPatterns.length === right.enabledModelPatterns.length &&
-    left.enabledModelPatterns.every(
-      (pattern, index) => pattern === right.enabledModelPatterns[index],
-    )
+    samePatterns(left.enabledModelPatterns, right.enabledModelPatterns)
   );
+}
+
+function samePatterns(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((pattern, index) => pattern === right[index]);
 }
 
 function mergeEnabledModelPatterns(

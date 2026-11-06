@@ -108,6 +108,9 @@
 
 .chat-header__status {
   flex: 0 0 auto;
+  /* The running timer ticks every second; proportional figures resize the label
+     each tick and shift the chrome beside it. */
+  font-variant-numeric: tabular-nums;
   color: var(--muted-soft);
   font-size: 13px;
   font-weight: 520;
@@ -1325,7 +1328,7 @@
 
 .image-viewer {
   position: fixed;
-  inset: 0;
+  inset: var(--window-titlebar-height) 0 0;
   z-index: 110;
   display: grid;
   place-items: center;
@@ -1339,7 +1342,7 @@
 
 .image-viewer__image {
   max-width: 100%;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - var(--window-titlebar-height) - 96px);
   object-fit: contain;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xl);
@@ -1367,7 +1370,7 @@
 
 .secondary-surface {
   min-height: 0;
-  height: 100vh;
+  height: 100%;
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   background: var(--window);
@@ -2900,10 +2903,11 @@
   }
 }
 
+/* Dialog backdrops stay above the narrow-window sidebar drawer (z-index 40). */
 .extension-dialog-backdrop {
   position: fixed;
-  inset: 0;
-  z-index: 30;
+  inset: var(--window-titlebar-height) 0 0;
+  z-index: 42;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -2923,7 +2927,7 @@
 }
 
 .custom-endpoint-dialog {
-  max-height: calc(100vh - 48px);
+  max-height: calc(100vh - var(--window-titlebar-height) - 48px);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -3012,8 +3016,8 @@
 
 .tree-modal-backdrop {
   position: fixed;
-  inset: 0;
-  z-index: 34;
+  inset: var(--window-titlebar-height) 0 0;
+  z-index: 43;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -3023,7 +3027,7 @@
 
 .tree-modal {
   width: min(860px, 100%);
-  max-height: min(760px, calc(100vh - 48px));
+  max-height: min(760px, calc(100vh - var(--window-titlebar-height) - 48px));
   display: grid;
   gap: 16px;
   padding: 22px;
